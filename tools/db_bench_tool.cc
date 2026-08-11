@@ -29,6 +29,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <queue>
@@ -36,6 +37,10 @@
 #include <ratio>
 #include <chrono>
 #include <unistd.h>
+#include <fstream>
+#include <filesystem>
+#include <variant>
+#include <nlohmann/json.hpp>
 
 #include "db/db_impl.h"
 #include "db/version_set.h"
@@ -85,6 +90,8 @@ using GFLAGS::ParseCommandLineFlags;
 using GFLAGS::RegisterFlagValidator;
 using GFLAGS::SetUsageMessage;
 
+DEFINE_string(benchmarks_json, "", "");
+
 DEFINE_string(
     benchmarks,
     "fillseq,"
@@ -103,8 +110,10 @@ DEFINE_string(
     "readreverse,"
     "compact,"
     "compactall,"
+    "waitforcompaction,"
     "readrandom,"
     "multireadrandom,"
+    "customperiodic,"
     "readseq,"
     "readtocache,"
     "readreverse,"
@@ -201,6 +210,7 @@ DEFINE_string(
     "Meta operations:\n"
     "\tcompact     -- Compact the entire DB; If multiple, randomly choose one\n"
     "\tcompactall  -- Compact the entire DB\n"
+    "\twaitforcompaction - pause until compaction is (probably) done\n"
     "\tstats       -- Print DB stats\n"
     "\tresetstats  -- Reset DB stats\n"
     "\tlevelstats  -- Print the number of files and bytes per level\n"
@@ -245,6 +255,7 @@ DEFINE_int64(seed, 0, "Seed base for random number generators. "
              "When 0 it is deterministic.");
 
 DEFINE_int32(threads, 1, "Number of concurrent threads to run.");
+DEFINE_int32(num_writers, 1, "Number of writer threads.");
 
 DEFINE_int32(duration, 0, "Time in seconds for the random-ops tests to run."
              " When 0 then num & reads determine the test duration");
@@ -259,6 +270,10 @@ DEFINE_int32(seek_nexts, 0,
 DEFINE_bool(reverse_iterator, false,
             "When true use Prev rather than Next for iterators that do "
             "Seek and then Next");
+
+DEFINE_int64(max_scan_distance, 0,
+             "Used to define iterate_upper_bound for seek operations "
+             "in ReadRandom when value is nonzero");
 
 DEFINE_bool(use_uint64_comparator, false, "use Uint64 user comparator");
 
@@ -852,6 +867,12 @@ DEFINE_uint64(
     "If non-zero, db_bench will rate-limit the reads from RocksDB. This "
     "is the global rate in ops/second.");
 
+DEFINE_uint64(period_secs, 0, "");
+DEFINE_string(writes_per_second_file, "", "");
+DEFINE_double(mix_get_ratio, 1.0, "");
+DEFINE_double(mix_seek_ratio, 0.0, "");
+DEFINE_int32(readahead_size, 0, "Iterator readahead size");
+
 DEFINE_uint64(max_compaction_bytes, rocksdb::Options().max_compaction_bytes,
               "Max bytes allowed in one compaction");
 
@@ -1288,17 +1309,53 @@ struct DBWithColumnFamilies {
   }
 };
 
+enum OperationType : unsigned char {
+  kRead = 0,
+  kGet,
+  kWrite,
+  kDelete,
+  kSeek,
+  kMerge,
+  kUpdate,
+  kCompress,
+  kUncompress,
+  kCrc,
+  kHash,
+  kOthers,
+  kOperationTypeEnumMax,
+};
+
+static std::unordered_map<OperationType, std::string, std::hash<unsigned char>>
+                          OperationTypeString = {
+  {kRead, "read"},
+  {kGet, "get"},
+  {kWrite, "write"},
+  {kDelete, "delete"},
+  {kSeek, "seek"},
+  {kMerge, "merge"},
+  {kUpdate, "update"},
+  {kCompress, "compress"},
+  {kCompress, "uncompress"},
+  {kCrc, "crc"},
+  {kHash, "hash"},
+  {kOthers, "op"}
+};
+
 // a class that reports stats to CSV file
 class ReporterAgent {
  public:
-  ReporterAgent(Env* env, const std::string& fname,
+  ReporterAgent(DB* db, Env* env, std::filesystem::path output_dir,
                 uint64_t report_interval_secs)
-      : env_(env),
+      : db_(db),
+        env_(env),
+        output_dir_(std::move(output_dir)),
         total_ops_done_(0),
         last_report_(0),
         report_interval_secs_(report_interval_secs),
         stop_(false) {
-    auto s = env_->NewWritableFile(fname, &report_file_, EnvOptions());
+    auto report_file_path = output_dir_ / FLAGS_report_file;
+    auto s =
+        env_->ReopenWritableFile(report_file_path, &report_file_, EnvOptions());
     if (s.ok()) {
       s = report_file_->Append(Header() + "\n");
     }
@@ -1306,9 +1363,23 @@ class ReporterAgent {
       s = report_file_->Flush();
     }
     if (!s.ok()) {
-      fprintf(stderr, "Can't open %s: %s\n", fname.c_str(),
+      fprintf(stderr, "Can't open %s: %s\n", report_file_path.c_str(),
               s.ToString().c_str());
       abort();
+    }
+
+    if (dbstats != nullptr) {
+      for (Tickers ticker : tickers_to_report_) {
+        last_ticker_[ticker] = dbstats->getTickerCount(ticker);
+      }
+    }
+
+    RateLimiter* rate_limiter = db_->GetOptions().rate_limiter.get();
+    if (rate_limiter != nullptr) {
+      for (int pri = Env::IO_LOW; pri < Env::IO_TOTAL; ++pri) {
+        last_bytes_through_[pri] = rate_limiter->GetTotalBytesThrough(
+            static_cast<Env::IOPriority>(pri));
+      }
     }
 
     reporting_thread_ = port::Thread([&]() { SleepAndReport(); });
@@ -1321,17 +1392,68 @@ class ReporterAgent {
       stop_cv_.notify_all();
     }
     reporting_thread_.join();
+
+    for (size_t i = 0; i < kOperationTypeEnumMax; ++i) {
+      OperationType op = static_cast<OperationType>(i);
+      const auto& hist = hist_[op];
+      if (!hist.Empty()) {
+        std::string fname =
+            (output_dir_ / (OperationTypeString[op] + "-latency-us.json")).string();
+        std::ofstream file(fname);
+        if (!file) {
+          printf("Can't open %s\n", fname.c_str());
+        } else {
+          file << "{\n\t\"Average\": " << hist.Average()
+               << ",\n\t\"10%\": " << hist.Percentile(10)
+               << ",\n\t\"50%\": " << hist.Percentile(50)
+               << ",\n\t\"90%\": " << hist.Percentile(90)
+               << ",\n\t\"99%\": " << hist.Percentile(99)
+               << ",\n\t\"99.9%\": " << hist.Percentile(99.9)
+               << ",\n\t\"99.99%\": " << hist.Percentile(99.99)
+               << "\n}\n";
+        }
+      }
+    }
   }
 
+  std::filesystem::path output_dir() const { return output_dir_; }
+
   // thread safe
-  void ReportFinishedOps(int64_t num_ops) {
-    total_ops_done_.fetch_add(num_ops);
+  void ReportFinishedOps(int64_t num_ops, enum OperationType op_type,
+                         uint64_t micros, bool count_toward_total = true) {
+    if (count_toward_total) {
+      total_ops_done_.fetch_add(num_ops);
+    }
+    auto& count_time = count_time_[op_type];
+    count_time.count.fetch_add(num_ops, std::memory_order_relaxed);
+    count_time.micros.fetch_add(micros, std::memory_order_relaxed);
+
+    assert(num_ops == 1);
+    hist_[op_type].Add(micros);
   }
 
  private:
-  std::string Header() const { return "secs_elapsed,interval_qps"; }
+  std::string Header() const {
+    std::ostringstream header;
+    header << "secs_elapsed,interval_qps";
+    if (dbstats != nullptr) {
+      for (Tickers ticker : tickers_to_report_) {
+        assert(ticker == TickersNameMap[ticker].first);
+        header << ',' << TickersNameMap[ticker].second;
+      }
+    }
+    header << ",num-sorted-runs";
+    header << ",num-flushes,num-compactions";
+    if (db_->GetOptions().rate_limiter.get() != nullptr) {
+      header << ",IO_LOW,IO_HIGH,rate-limit";
+    }
+    return header.str();
+  }
   void SleepAndReport() {
-    uint64_t kMicrosInSecond = 1000 * 1000;
+    RateLimiter* rate_limiter = db_->GetOptions().rate_limiter.get();
+    std::unordered_map<OperationType, std::unique_ptr<WritableFile>>
+        op_count_time;
+
     auto time_started = env_->NowMicros();
     while (true) {
       {
@@ -1349,10 +1471,64 @@ class ReporterAgent {
       auto secs_elapsed =
           (env_->NowMicros() - time_started + kMicrosInSecond / 2) /
           kMicrosInSecond;
-      std::string report = ToString(secs_elapsed) + "," +
-                           ToString(total_ops_done_snapshot - last_report_) +
-                           "\n";
-      auto s = report_file_->Append(report);
+
+      std::ostringstream report;
+      report << secs_elapsed << ',' << (total_ops_done_snapshot - last_report_);
+      last_report_ = total_ops_done_snapshot;
+
+      if (dbstats != nullptr) {
+        for (Tickers ticker : tickers_to_report_) {
+          uint64_t cur = dbstats->getTickerCount(ticker);
+          uint64_t& last = last_ticker_[ticker];
+          report << ',' << cur - last;
+          last = cur;
+        }
+      }
+
+      uint64_t num_sorted_runs = 0;
+      std::string tmp;
+      if (db_->GetProperty(DB::Properties::kNumFilesAtLevelPrefix + "0",
+                           &tmp)) {
+        num_sorted_runs += std::atoi(tmp.c_str());
+      }
+      size_t num_levels = db_->NumberLevels();
+      for (size_t i = 1; i < num_levels; ++i) {
+        if (db_->GetProperty(
+                DB::Properties::kNumFilesAtLevelPrefix + std::to_string(i),
+                &tmp)) {
+          if (std::atoi(tmp.c_str())) {
+            num_sorted_runs += 1;
+          }
+        }
+      }
+      report << ',' << num_sorted_runs;
+
+      uint64_t value;
+      bool good =
+          db_->GetIntProperty(DB::Properties::kNumRunningFlushes, &value);
+      assert(good);
+      report << ',' << value;
+
+      good =
+          db_->GetIntProperty(DB::Properties::kNumRunningCompactions, &value);
+      assert(good);
+      report << ',' << value;
+
+      if (rate_limiter != nullptr) {
+        uint64_t bytes_through[Env::IO_TOTAL];
+        for (int pri = Env::IO_LOW; pri < Env::IO_TOTAL; ++pri) {
+          uint64_t total = rate_limiter->GetTotalBytesThrough(
+              static_cast<Env::IOPriority>(pri));
+          bytes_through[pri] = total - last_bytes_through_[pri];
+          last_bytes_through_[pri] = total;
+        }
+        report << ',' << bytes_through[Env::IO_LOW] << ','
+               << bytes_through[Env::IO_HIGH] << ','
+               << rate_limiter->GetBytesPerSecond();
+      }
+      report << '\n';
+
+      Status s = report_file_->Append(report.str());
       if (s.ok()) {
         s = report_file_->Flush();
       }
@@ -1362,49 +1538,94 @@ class ReporterAgent {
                 s.ToString().c_str());
         break;
       }
-      last_report_ = total_ops_done_snapshot;
+
+      for (size_t i = 0; i < kOperationTypeEnumMax; ++i) {
+        OperationType op = static_cast<OperationType>(i);
+        CountTime count_time(
+            count_time_[op].count.load(std::memory_order_relaxed),
+            count_time_[op].micros.load(std::memory_order_relaxed));
+        if (count_time.count == 0) continue;
+        CountTime diff = count_time - last_count_time_[op];
+        last_count_time_[op] = count_time;
+        auto it = op_count_time.find(op);
+        if (it == op_count_time.end()) {
+          std::string fname =
+              (output_dir_ / (OperationTypeString[op] + "-count-time.csv")).string();
+          std::unique_ptr<WritableFile> file;
+          s = env_->NewWritableFile(fname, &file, EnvOptions());
+          if (s.ok()) {
+            s = file->Append("secs_elapsed,count,micros\n");
+          }
+          if (s.ok()) {
+            s = file->Flush();
+          }
+          if (!s.ok()) {
+            fprintf(stderr, "Can't open %s: %s\n", fname.c_str(),
+                    s.ToString().c_str());
+            abort();
+          }
+          auto res = op_count_time.emplace(op, std::move(file));
+          assert(res.second);
+          it = res.first;
+        }
+        report.str("");
+        report << secs_elapsed << ',' << diff.count << ',' << diff.micros
+               << '\n';
+        s = it->second->Append(report.str());
+        if (!s.ok()) {
+          fprintf(stderr,
+                  "Can't write to report file (%s), stopping the reporting\n",
+                  s.ToString().c_str());
+          return;
+        }
+      }
     }
   }
 
+  static constexpr uint64_t kMicrosInSecond = 1000 * 1000;
+
+  DB* db_;
   Env* env_;
+  std::filesystem::path output_dir_;
   std::unique_ptr<WritableFile> report_file_;
   std::atomic<int64_t> total_ops_done_;
   int64_t last_report_;
   const uint64_t report_interval_secs_;
+
+  const std::vector<Tickers> tickers_to_report_{
+      BYTES_WRITTEN,
+      COMPACT_WRITE_BYTES,
+      STALL_MICROS,
+  };
+  std::unordered_map<Tickers, uint64_t> last_ticker_;
+
+  struct AtomicCountTime {
+    std::atomic<uint64_t> count;
+    std::atomic<uint64_t> micros;
+    AtomicCountTime() : count(0), micros(0) {}
+  };
+  AtomicCountTime count_time_[kOperationTypeEnumMax];
+  struct CountTime {
+    uint64_t count;
+    uint64_t micros;
+    CountTime() : count(0), micros(0) {}
+    CountTime(uint64_t _count, uint64_t _micros)
+        : count(_count), micros(_micros) {}
+    CountTime operator-(const CountTime& rhs) const {
+      return CountTime(count - rhs.count, micros - rhs.micros);
+    }
+  };
+  CountTime last_count_time_[kOperationTypeEnumMax];
+
+  HistogramImpl hist_[kOperationTypeEnumMax];
+
+  uint64_t last_bytes_through_[Env::IO_TOTAL] = {0};
+
   rocksdb::port::Thread reporting_thread_;
   std::mutex mutex_;
   // will notify on stop
   std::condition_variable stop_cv_;
   bool stop_;
-};
-
-enum OperationType : unsigned char {
-  kRead = 0,
-  kWrite,
-  kDelete,
-  kSeek,
-  kMerge,
-  kUpdate,
-  kCompress,
-  kUncompress,
-  kCrc,
-  kHash,
-  kOthers
-};
-
-static std::unordered_map<OperationType, std::string, std::hash<unsigned char>>
-                          OperationTypeString = {
-  {kRead, "read"},
-  {kWrite, "write"},
-  {kDelete, "delete"},
-  {kSeek, "seek"},
-  {kMerge, "merge"},
-  {kUpdate, "update"},
-  {kCompress, "compress"},
-  {kCompress, "uncompress"},
-  {kCrc, "crc"},
-  {kHash, "hash"},
-  {kOthers, "op"}
 };
 
 class CombinedStats;
@@ -1527,7 +1748,9 @@ class Stats {
     
     long cur_ops_interval = 0;
     if (reporter_agent_) {
-      reporter_agent_->ReportFinishedOps(num_ops);
+      uint64_t now = FLAGS_env->NowMicros();
+      uint64_t micros = now - op_start_time;
+      reporter_agent_->ReportFinishedOps(num_ops, op_type, micros);
     }
     if (FLAGS_histogram) {
       uint64_t now = FLAGS_env->NowMicros();
@@ -1653,13 +1876,23 @@ class Stats {
   }
 
   void FinishedOps(DBWithColumnFamilies* db_with_cfh, DB* db, int64_t num_ops,
-                   enum OperationType op_type = kOthers) {
-    if (reporter_agent_) {
-      reporter_agent_->ReportFinishedOps(num_ops);
-    }
-    if (FLAGS_histogram) {
-      uint64_t now = FLAGS_env->NowMicros();
-      uint64_t micros = now - last_op_finish_;
+                   enum OperationType op_type = kOthers,
+                   std::optional<uint64_t> _micros = std::nullopt,
+                   bool count_toward_total = true) {
+    if (FLAGS_histogram || reporter_agent_) {
+      uint64_t micros;
+      if (_micros.has_value()) {
+        micros = _micros.value();
+      } else {
+        uint64_t now = FLAGS_env->NowMicros();
+        micros = now - last_op_finish_;
+        last_op_finish_ = now;
+      }
+
+      if (reporter_agent_) {
+        reporter_agent_->ReportFinishedOps(num_ops, op_type, micros,
+                                           count_toward_total);
+      }
 
       if (hist_.find(op_type) == hist_.end())
       {
@@ -1672,7 +1905,10 @@ class Stats {
         fprintf(stderr, "long op: %" PRIu64 " micros%30s\r", micros, "");
         fflush(stderr);
       }
-      last_op_finish_ = now;
+    }
+
+    if (!count_toward_total) {
+      return;
     }
 
     done_ += num_ops;
@@ -1994,6 +2230,8 @@ class Duration {
 
 class Benchmark {
  private:
+  std::filesystem::path output_dir_;
+
   std::shared_ptr<Cache> cache_;
   std::shared_ptr<Cache> compressed_cache_;
   std::shared_ptr<const FilterPolicy> filter_policy_;
@@ -2014,7 +2252,12 @@ class Benchmark {
   int64_t reads_;
   int64_t deletes_;
   double read_random_exp_range_;
+
+  uint64_t duration_;
   int64_t writes_;
+  uint64_t benchmark_write_rate_limit_;
+  std::string writes_per_second_file_;
+
   int64_t readwrites_;
   int64_t merge_keys_;
   bool report_file_operations_;
@@ -2456,14 +2699,67 @@ void VerifyDBFromDB(std::string& truth_db_name) {
     Open(&open_options_);
 
     PrintHeader();
-    std::stringstream benchmark_stream(FLAGS_benchmarks);
-    std::string name;
+    std::variant<std::pair<nlohmann::json, nlohmann::json::iterator>,
+                 std::stringstream>
+        benchmarks;
+    if (!FLAGS_benchmarks_json.empty()) {
+      auto json = nlohmann::json::parse(FLAGS_benchmarks_json);
+      benchmarks = std::make_pair(std::move(json), nlohmann::json::iterator());
+      auto& pair = std::get<0>(benchmarks);
+      pair.second = pair.first.begin();
+    } else {
+      benchmarks = std::stringstream(FLAGS_benchmarks);
+    }
+    bool first_benchmark = true;
     std::unique_ptr<ExpiredTimeFilter> filter;
-    while (std::getline(benchmark_stream, name, ',')) {
+    for (;;) {
+      std::string name;
+      int num_threads;
+      if (benchmarks.index() == 0) {
+        auto& [json, benchmarks_it] = std::get<0>(benchmarks);
+        if (!first_benchmark) {
+          ++benchmarks_it;
+        }
+        if (benchmarks_it == json.end()) {
+          break;
+        }
+        auto& benchmark = *benchmarks_it;
+        name = benchmark["name"];
+        auto it = benchmark.find("output_dir");
+        output_dir_ =
+            (it != benchmark.end()) ? static_cast<std::string>(*it) : ".";
+        it = benchmark.find("threads");
+        num_threads = (it != benchmark.end() ? static_cast<uint64_t>(*it)
+                                             : FLAGS_threads);
+        it = benchmark.find("duration");
+        duration_ = (it != benchmark.end() ? static_cast<uint64_t>(*it)
+                                           : static_cast<uint64_t>(FLAGS_duration));
+        it = benchmark.find("writes");
+        writes_ = (it != benchmark.end()
+                       ? static_cast<int64_t>(*it)
+                       : (FLAGS_writes < 0 ? FLAGS_num : FLAGS_writes));
+        it = benchmark.find("benchmark_write_rate_limit");
+        benchmark_write_rate_limit_ =
+            (it != benchmark.end() ? static_cast<uint64_t>(*it)
+                                   : FLAGS_benchmark_write_rate_limit);
+        it = benchmark.find("writes_per_second_file");
+        writes_per_second_file_ =
+            (it != benchmark.end() ? static_cast<std::string>(*it) : "");
+      } else {
+        if (!std::getline(std::get<1>(benchmarks), name, ',')) {
+          break;
+        }
+        num_threads = FLAGS_threads;
+        duration_ = static_cast<uint64_t>(FLAGS_duration);
+        writes_ = (FLAGS_writes < 0 ? FLAGS_num : FLAGS_writes);
+        benchmark_write_rate_limit_ = FLAGS_benchmark_write_rate_limit;
+        writes_per_second_file_ = FLAGS_writes_per_second_file;
+        output_dir_ = ".";
+      }
+      first_benchmark = false;
       // Sanitize parameters
       num_ = FLAGS_num;
       reads_ = (FLAGS_reads < 0 ? FLAGS_num : FLAGS_reads);
-      writes_ = (FLAGS_writes < 0 ? FLAGS_num : FLAGS_writes);
       deletes_ = (FLAGS_deletes < 0 ? FLAGS_num : FLAGS_deletes);
       value_size_ = FLAGS_value_size;
       key_size_ = FLAGS_key_size;
@@ -2482,7 +2778,6 @@ void VerifyDBFromDB(std::string& truth_db_name) {
       void (Benchmark::*post_process_method)() = nullptr;
 
       bool fresh_db = false;
-      int num_threads = FLAGS_threads;
 
       int num_repeat = 1;
       int num_warmup = 0;
@@ -2584,6 +2879,9 @@ void VerifyDBFromDB(std::string& truth_db_name) {
         fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
                 entries_per_batch_);
         method = &Benchmark::MultiReadRandom;
+      } else if (name == "customperiodic") {
+        method = &Benchmark::CustomPeriodic;
+        num_threads += FLAGS_num_writers;
       } else if (name == "readmissing") {
         ++key_size_;
         method = &Benchmark::ReadRandom;
@@ -2675,6 +2973,8 @@ void VerifyDBFromDB(std::string& truth_db_name) {
         method = &Benchmark::Compact;
       } else if (name == "compactall") {
         CompactAll();
+      } else if (name == "waitforcompaction") {
+        WaitForCompaction();
       } else if (name == "crc32c") {
         method = &Benchmark::Crc32c;
       } else if (name == "xxhash") {
@@ -2823,9 +3123,16 @@ void VerifyDBFromDB(std::string& truth_db_name) {
     shared.num_done = 0;
     shared.send_low_workload = 0;
     shared.start = false;
-    if (FLAGS_benchmark_write_rate_limit > 0) {
+    if (benchmark_write_rate_limit_ > 0) {
       shared.write_rate_limiter.reset(
-          NewGenericRateLimiter(FLAGS_benchmark_write_rate_limit));
+          NewGenericRateLimiter(benchmark_write_rate_limit_));
+    } else if (!writes_per_second_file_.empty()) {
+      PerSec writes_per_second(writes_per_second_file_);
+      auto init = writes_per_second.init();
+      if (init.has_value()) {
+        shared.write_rate_limiter.reset(
+            NewGenericRateLimiter(static_cast<int64_t>(*init)));
+      }
     }
     if (FLAGS_benchmark_read_rate_limit > 0) {
       shared.read_rate_limiter.reset(NewGenericRateLimiter(
@@ -2835,7 +3142,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
 
     std::unique_ptr<ReporterAgent> reporter_agent;
     if (FLAGS_report_interval_seconds > 0) {
-      reporter_agent.reset(new ReporterAgent(FLAGS_env, FLAGS_report_file,
+      reporter_agent.reset(new ReporterAgent(db_.db, FLAGS_env, output_dir_,
                                              FLAGS_report_interval_seconds));
     }
 
@@ -3601,7 +3908,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
         case RANDOM:
           return rand_->Next() % num_;
         case UNIQUE_RANDOM:
-          assert(next_ + 1 < num_);
+          assert(next_ < num_);
           return values_[next_++];
       }
       assert(false);
@@ -3633,7 +3940,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
   }
 
   void DoWrite(ThreadState* thread, WriteMode write_mode) {
-    const int test_duration = write_mode == RANDOM ? FLAGS_duration : 0;
+    const int test_duration = write_mode == RANDOM ? duration_ : 0;
     const int64_t num_ops = writes_ == 0 ? num_ : writes_;
 
     size_t num_key_gens = 1;
@@ -4168,7 +4475,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
       pot <<= 1;
     }
 
-    Duration duration(FLAGS_duration, reads_);
+    Duration duration(duration_, reads_);
     do {
       for (int i = 0; i < 100; ++i) {
         int64_t key_rand = thread->rand.Next() & (pot - 1);
@@ -4228,15 +4535,22 @@ void VerifyDBFromDB(std::string& truth_db_name) {
   }
 
   void ReadRandom(ThreadState* thread) {
-    int64_t read = 0;
-    int64_t found = 0;
+    int64_t gets = 0;
+    int64_t get_found = 0;
+    int64_t seek = 0;
+    int64_t seek_found = 0;
+    uint64_t seek_scanned = 0;
     int64_t bytes = 0;
     ReadOptions options(FLAGS_verify_checksum, true);
+    options.readahead_size = static_cast<size_t>(FLAGS_readahead_size);
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
+    std::unique_ptr<const char[]> upper_bound_key_guard;
+    Slice upper_bound = AllocateKey(&upper_bound_key_guard);
     PinnableSlice pinnable_val;
 
-    Duration duration(FLAGS_duration, reads_);
+    Duration duration(duration_, reads_);
+    char value_buffer[256];
     while (!duration.Done(1)) {
       DBWithColumnFamilies* db_with_cfh = SelectDBWithCfh(thread);
       // We use same key_rand as seed for key and column family so that we can
@@ -4244,37 +4558,92 @@ void VerifyDBFromDB(std::string& truth_db_name) {
       // is done in DoWrite method.
       int64_t key_rand = GetRandomKey(&thread->rand);
       GenerateKeyFromInt(key_rand, FLAGS_num, &key);
-      read++;
+
+      options.iterate_upper_bound = nullptr;
+
       Status s;
+      pinnable_val.Reset();
+      ColumnFamilyHandle* cfh;
       if (FLAGS_num_column_families > 1) {
-        s = db_with_cfh->db->Get(options, db_with_cfh->GetCfh(key_rand), key,
-                                 &pinnable_val);
+        cfh = db_with_cfh->GetCfh(key_rand);
       } else {
-        pinnable_val.Reset();
-        s = db_with_cfh->db->Get(options,
-                                 db_with_cfh->db->DefaultColumnFamily(), key,
-                                 &pinnable_val);
-      }
-      if (s.ok()) {
-        found++;
-        bytes += key.size() + pinnable_val.size();
-      } else if (!s.IsNotFound()) {
-        fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
-        abort();
+        cfh = db_with_cfh->db->DefaultColumnFamily();
       }
 
-      if (thread->shared->read_rate_limiter.get() != nullptr &&
-          read % 256 == 255) {
+      // Mix gets and seeks according to the ratios so the read phase
+      // approximates the production access mix.
+      double ratio = static_cast<double>(thread->rand.Next() % 1000) / 1000.0;
+      double total_ratio = FLAGS_mix_get_ratio + FLAGS_mix_seek_ratio;
+
+      auto start = std::chrono::steady_clock::now();
+
+      OperationType op_type;
+      if (total_ratio > 0 && ratio < FLAGS_mix_get_ratio / total_ratio) {
+        op_type = kGet;
+        gets++;
+        s = db_with_cfh->db->Get(options, cfh, key, &pinnable_val);
+        if (s.ok()) {
+          get_found++;
+          bytes += key.size() + pinnable_val.size();
+        } else if (!s.IsNotFound()) {
+          fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
+          abort();
+        }
+      } else {
+        op_type = kSeek;
+        seek++;
+        if (FLAGS_max_scan_distance != 0) {
+          auto min_num =
+              std::min(static_cast<int64_t>(FLAGS_num), key_rand + FLAGS_max_scan_distance);
+          GenerateKeyFromInt(min_num, FLAGS_num, &upper_bound);
+          options.iterate_upper_bound = &upper_bound;
+        }
+        Iterator* single_iter = db_with_cfh->db->NewIterator(options);
+        if (single_iter != nullptr) {
+          single_iter->Seek(key);
+          if (single_iter->Valid() && single_iter->key().compare(key) == 0) {
+            seek_found++;
+          }
+          seek_scanned += FLAGS_seek_nexts;
+          for (uint64_t j = 0;
+               j < static_cast<uint64_t>(FLAGS_seek_nexts) &&
+               single_iter->Valid();
+               j++) {
+            Slice value = single_iter->value();
+            memcpy(value_buffer, value.data(),
+                   std::min(value.size(), sizeof(value_buffer)));
+            bytes += single_iter->key().size() + single_iter->value().size();
+            if (!FLAGS_reverse_iterator) {
+              single_iter->Next();
+            } else {
+              single_iter->Prev();
+            }
+            assert(single_iter->status().ok());
+          }
+        }
+        delete single_iter;
+      }
+
+      auto now = std::chrono::steady_clock::now();
+      auto micros =
+          std::chrono::duration_cast<std::chrono::microseconds>(now - start)
+              .count();
+      thread->stats.FinishedOps(db_with_cfh, db_with_cfh->db, 1, op_type,
+                                 static_cast<uint64_t>(micros));
+      thread->stats.FinishedOps(db_with_cfh, db_with_cfh->db, 1, kRead,
+                                 static_cast<uint64_t>(micros), false);
+
+      if (thread->shared->read_rate_limiter.get() != nullptr) {
         thread->shared->read_rate_limiter->Request(
-            256, Env::IO_HIGH, nullptr /* stats */, RateLimiter::OpType::kRead);
+            1, Env::IO_HIGH, nullptr /* stats */, RateLimiter::OpType::kRead);
       }
-
-      thread->stats.FinishedOps(db_with_cfh, db_with_cfh->db, 1, kRead);
     }
 
-    char msg[100];
-    snprintf(msg, sizeof(msg), "(%" PRIu64 " of %" PRIu64 " found)\n",
-             found, read);
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "Gets: %" PRIu64 " in %" PRIu64 " found\nSeek: %" PRIu64
+             " in %" PRIu64 " found, scanned %" PRIu64 "\n",
+             get_found, gets, seek_found, seek, seek_scanned);
 
     thread->stats.AddBytes(bytes);
     thread->stats.AddMessage(msg);
@@ -4299,7 +4668,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
       keys.push_back(AllocateKey(&key_guards.back()));
     }
 
-    Duration duration(FLAGS_duration, reads_);
+    Duration duration(duration_, reads_);
     while (!duration.Done(1)) {
       DB* db = SelectDB(thread);
       for (int64_t i = 0; i < entries_per_batch_; ++i) {
@@ -4334,8 +4703,135 @@ void VerifyDBFromDB(std::string& truth_db_name) {
     thread->stats.AddMessage(msg);
   }
 
+  void CustomPeriodic(ThreadState* thread) {
+    if (thread->tid < FLAGS_num_writers) {
+      CustomPeriodicWriter(thread);
+    } else {
+      ReadRandom(thread);
+    }
+  }
+
+  class PerSec {
+   public:
+    PerSec(const std::string& path)
+        : cur_(0),
+          each_us_(0),
+          cur_begin_us_(FLAGS_env->NowMicros()),
+          last_recalc_us_(cur_begin_us_) {
+      if (path.empty()) {
+        return;
+      }
+      std::ifstream file(path);
+      for (;;) {
+        double x;
+        file >> x;
+        if (!file) {
+          break;
+        }
+        op_per_sec_.push_back(x);
+      }
+      if (op_per_sec_.empty()) {
+        fprintf(stderr, "PerSec: no data in file %s\n", path.c_str());
+        exit(1);
+      }
+      if (FLAGS_period_secs <= 0) {
+        fprintf(stderr, "PerSec: --period_secs must be > 0\n");
+        exit(1);
+      }
+      each_us_ = FLAGS_period_secs * 1000000 / op_per_sec_.size();
+      if (each_us_ == 0) {
+        fprintf(stderr,
+                "PerSec: --period_secs=%lu is too short for %zu entries\n",
+                FLAGS_period_secs, op_per_sec_.size());
+        exit(1);
+      }
+    }
+
+    std::optional<double> init() {
+      if (op_per_sec_.empty()) {
+        return std::nullopt;
+      }
+      return op_per_sec_[0];
+    }
+
+    std::optional<double> new_limit() {
+      if (op_per_sec_.empty()) {
+        return std::nullopt;
+      }
+      assert(each_us_ > 0);
+      auto now_micros = FLAGS_env->NowMicros();
+      if (now_micros - last_recalc_us_ < recalc_interval_us) {
+        return std::nullopt;
+      }
+      last_recalc_us_ = now_micros;
+      auto delta = now_micros - cur_begin_us_;
+      auto next = (cur_ + 1) % op_per_sec_.size();
+      while (delta >= each_us_) {
+        cur_ = next;
+        next = (cur_ + 1) % op_per_sec_.size();
+        cur_begin_us_ += each_us_;
+        delta = now_micros - cur_begin_us_;
+      }
+      return (double)delta / each_us_ *
+                 (op_per_sec_[next] - op_per_sec_[cur_]) +
+             op_per_sec_[cur_];
+    }
+
+   private:
+    constexpr static uint64_t recalc_interval_us = 1000000;
+
+    std::vector<double> op_per_sec_;
+
+    size_t cur_;
+    uint64_t each_us_;
+    uint64_t cur_begin_us_;
+    uint64_t last_recalc_us_;
+  };
+
+  void CustomPeriodicWriter(ThreadState* thread) {
+    RandomGenerator gen;
+
+    std::unique_ptr<const char[]> key_guard;
+    Slice key = AllocateKey(&key_guard);
+
+    PerSec writes_per_second(writes_per_second_file_);
+
+    Duration duration(duration_,
+                      std::numeric_limits<int64_t>::max());
+    while (!duration.Done(1)) {
+      DBWithColumnFamilies* db_with_cfh = SelectDBWithCfh(thread);
+      GenerateKeyFromInt(GetRandomKey(&thread->rand), FLAGS_num,
+                         &key);
+
+      thread->stats.ResetLastOpTime();
+      Status s = db_with_cfh->db->Put(
+          write_options_, key,
+          gen.Generate(static_cast<unsigned int>(FLAGS_value_size)));
+      if (!s.ok()) {
+        fprintf(stderr, "put error: %s\n", s.ToString().c_str());
+        exit(1);
+      }
+      thread->stats.FinishedOps(db_with_cfh, db_with_cfh->db, 1,
+                                kWrite);
+      if (thread->shared->write_rate_limiter.get() != nullptr) {
+        thread->shared->write_rate_limiter->Request(
+            1, Env::IO_HIGH, nullptr,
+            RateLimiter::OpType::kWrite);
+      }
+
+      if (thread->tid == 0) {
+        auto new_limit_write = writes_per_second.new_limit();
+        if (new_limit_write.has_value()) {
+          assert(thread->shared->write_rate_limiter.get() != nullptr);
+          thread->shared->write_rate_limiter->SetBytesPerSecond(
+              static_cast<int64_t>(*new_limit_write));
+        }
+      }
+    }
+  }
+
   void IteratorCreation(ThreadState* thread) {
-    Duration duration(FLAGS_duration, reads_);
+    Duration duration(duration_, reads_);
     ReadOptions options(FLAGS_verify_checksum, true);
     while (!duration.Done(1)) {
       DB* db = SelectDB(thread);
@@ -4373,7 +4869,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
 
-    Duration duration(FLAGS_duration, reads_);
+    Duration duration(duration_, reads_);
     char value_buffer[256];
     while (!duration.Done(1)) {
       if (!FLAGS_use_tailing_iterator) {
@@ -4459,7 +4955,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
 
   void DoDelete(ThreadState* thread, bool seq) {
     WriteBatch batch;
-    Duration duration(seq ? 0 : FLAGS_duration, deletes_);
+    Duration duration(seq ? 0 : duration_, deletes_);
     int64_t i = 0;
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -4512,9 +5008,9 @@ void VerifyDBFromDB(std::string& truth_db_name) {
     int64_t bytes = 0;
 
     std::unique_ptr<RateLimiter> write_rate_limiter;
-    if (FLAGS_benchmark_write_rate_limit > 0) {
+    if (benchmark_write_rate_limit_ > 0) {
       write_rate_limiter.reset(
-          NewGenericRateLimiter(FLAGS_benchmark_write_rate_limit));
+          NewGenericRateLimiter(benchmark_write_rate_limit_));
     }
 
     // Don't merge stats from this thread with the readers.
@@ -4840,7 +5336,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
     int put_weight = 0;
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -4899,7 +5395,7 @@ void LongPeakTest(ThreadState* thread) {
 
     ReadOptions options(FLAGS_verify_checksum, true);
     RandomGenerator gen;
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
     std::string value;
     long vals_generated = 0;
     long writes_done = 0;
@@ -5070,7 +5566,7 @@ void ReadRandomWriteRandomDifferentValueSizesPerThread(ThreadState* thread) {
     int64_t reads_done = 0;
     int64_t writes_done = 0;
     int64_t ops_done = 0;
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
 
     int value_sizes_per_thread[8];
     value_sizes_per_thread[0] = 1;
@@ -5151,7 +5647,7 @@ void ReadRandomWriteRandomDifferentValueSizesPerThreadComparison(ThreadState* th
     int64_t reads_done = 0;
     int64_t writes_done = 0;
     int64_t ops_done = 0;
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
 
     int value_sizes_per_thread[8];
     value_sizes_per_thread[0] = 1;
@@ -5233,7 +5729,7 @@ void ReadRandomWriteRandomDifferentValueSizesPerThreadComparison(ThreadState* th
     int64_t reads_done = 0;
     int64_t writes_done = 0;
     int64_t ops_done = 0;
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -5301,7 +5797,7 @@ void ReadRandomWriteRandomDifferentValueSizesPerThreadComparison(ThreadState* th
     int put_weight = 0;
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -5373,7 +5869,7 @@ void ReadRandomWriteRandomDifferentValueSizesPerThreadComparison(ThreadState* th
     int put_weight = 0;
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -5436,7 +5932,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     int64_t reads_done = 0;
     int64_t writes_done = 0;
     int64_t ops_done = 0;
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -5504,7 +6000,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
 
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, 0);
+    Duration duration(duration_, 0);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -5548,7 +6044,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
 
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, 0);
+    Duration duration(duration_, 0);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -5632,7 +6128,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
 
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, 0);
+    Duration duration(duration_, 0);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -5701,7 +6197,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
 
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, 0);
+    Duration duration(duration_, 0);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -5767,7 +6263,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
 
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, 0);
+    Duration duration(duration_, 0);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -5850,7 +6346,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
 
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, 0);
+    Duration duration(duration_, 0);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -5934,7 +6430,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
 
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, 0);
+    Duration duration(duration_, 0);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -6024,7 +6520,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     int put_weight = 0;
     int64_t reads_done = 0;
     int64_t writes_done = 0;
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -6099,7 +6595,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     std::string value;
     int64_t found = 0;
     int64_t bytes = 0;
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
 
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
@@ -6152,7 +6648,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
     // The number of iterations is the larger of read_ or write_
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
     while (!duration.Done(1)) {
       DB* db = SelectDB(thread);
       GenerateKeyFromInt(thread->rand.Next() % FLAGS_num, FLAGS_num, &key);
@@ -6211,7 +6707,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
     // The number of iterations is the larger of read_ or write_
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
     while (!duration.Done(1)) {
       DB* db = SelectDB(thread);
       GenerateKeyFromInt(thread->rand.Next() % merge_keys_, merge_keys_, &key);
@@ -6252,7 +6748,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
     // the number of iterations is the larger of read_ or write_
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
     while (!duration.Done(1)) {
       DB* db = SelectDB(thread);
       GenerateKeyFromInt(thread->rand.Next() % merge_keys_, merge_keys_, &key);
@@ -6342,7 +6838,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
   // by checking if the sum of all keys in each set is the same.
   void RandomTransaction(ThreadState* thread) {
     ReadOptions options(FLAGS_verify_checksum, true);
-    Duration duration(FLAGS_duration, readwrites_);
+    Duration duration(duration_, readwrites_);
     ReadOptions read_options(FLAGS_verify_checksum, true);
     uint16_t num_prefix_ranges = static_cast<uint16_t>(FLAGS_transaction_sets);
     uint64_t transactions_done = 0;
@@ -6455,7 +6951,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     std::default_random_engine generator;
     std::normal_distribution<double> distribution(FLAGS_numdistinct / 2.0,
                                                   FLAGS_stddev);
-    Duration duration(FLAGS_duration, FLAGS_num);
+    Duration duration(duration_, FLAGS_num);
     while (!duration.Done(1)) {
       int64_t rnd_id = static_cast<int64_t>(distribution(generator));
       int64_t key_id = std::max(std::min(FLAGS_numdistinct - 1, rnd_id),
@@ -6584,7 +7080,7 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
 
-    Duration duration(FLAGS_duration, writes_);
+    Duration duration(duration_, writes_);
     while (!duration.Done(1)) {
       DB* db = SelectDB(thread);
 
@@ -6651,6 +7147,39 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     }
     for (const auto& db_with_cfh : multi_dbs_) {
       db_with_cfh.db->CompactRange(CompactRangeOptions(), nullptr, nullptr);
+    }
+  }
+
+  void WaitForCompactionHelper(DBWithColumnFamilies& db) {
+    fprintf(stdout, "waitforcompaction(%s): started\n",
+            db.db->GetName().c_str());
+
+    std::string num_running;
+    std::string pending_bytes;
+    for (;;) {
+      db.db->GetProperty("rocksdb.num-running-compactions", &num_running);
+      db.db->GetProperty("rocksdb.estimate-pending-compaction-bytes",
+                         &pending_bytes);
+      if (num_running == "0" && pending_bytes == "0") {
+        break;
+      }
+      FLAGS_env->SleepForMicroseconds(1000000);
+    }
+
+    fprintf(stdout, "waitforcompaction(%s): finished (%s)\n",
+            db.db->GetName().c_str(), num_running.c_str());
+  }
+
+  void WaitForCompaction() {
+    // Give background threads a chance to wake
+    FLAGS_env->SleepForMicroseconds(5 * 1000000);
+
+    if (db_.db != nullptr) {
+      WaitForCompactionHelper(db_);
+    } else {
+      for (auto& db_with_cfh : multi_dbs_) {
+        WaitForCompactionHelper(db_with_cfh);
+      }
     }
   }
 
