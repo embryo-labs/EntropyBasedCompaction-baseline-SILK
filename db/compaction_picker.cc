@@ -961,6 +961,11 @@ bool LevelCompactionPicker::NeedsCompaction(
 }
 
 namespace {
+enum class LevelCompactionPickMode {
+  kAny,
+  kL0ToBaseLevel,
+};
+
 // A class to build a leveled compaction step-by-step.
 class LevelCompactionBuilder {
  public:
@@ -969,13 +974,15 @@ class LevelCompactionBuilder {
                          CompactionPicker* compaction_picker,
                          LogBuffer* log_buffer,
                          const MutableCFOptions& mutable_cf_options,
-                         const ImmutableCFOptions& ioptions)
+                         const ImmutableCFOptions& ioptions,
+                         LevelCompactionPickMode pick_mode)
       : cf_name_(cf_name),
         vstorage_(vstorage),
         compaction_picker_(compaction_picker),
         log_buffer_(log_buffer),
         mutable_cf_options_(mutable_cf_options),
-        ioptions_(ioptions) {}
+        ioptions_(ioptions),
+        pick_mode_(pick_mode) {}
 
   // Pick and return a compaction.
   Compaction* PickCompaction();
@@ -1033,6 +1040,7 @@ class LevelCompactionBuilder {
 
   const MutableCFOptions& mutable_cf_options_;
   const ImmutableCFOptions& ioptions_;
+  const LevelCompactionPickMode pick_mode_;
   // Pick a path ID to place a newly generated file, with its level
   static uint32_t GetPathId(const ImmutableCFOptions& ioptions,
                             const MutableCFOptions& mutable_cf_options,
@@ -1092,6 +1100,10 @@ void LevelCompactionBuilder::SetupInitialFiles() {
     start_level_score_ = vstorage_->CompactionScore(i);
     start_level_ = vstorage_->CompactionScoreLevel(i);
     assert(i == 0 || start_level_score_ <= vstorage_->CompactionScore(i - 1));
+    if (pick_mode_ == LevelCompactionPickMode::kL0ToBaseLevel &&
+        start_level_ != 0) {
+      continue;
+    }
     if (start_level_score_ >= 1) {
       if (skipped_l0_to_base && start_level_ == vstorage_->base_level()) {
         // If L0->base_level compaction is pending, don't schedule further
@@ -1123,7 +1135,8 @@ void LevelCompactionBuilder::SetupInitialFiles() {
           // In these cases, to reduce L0 file count and thus reduce likelihood
           // of write stalls, we can attempt compacting a span of files within
           // L0.
-          if (PickIntraL0Compaction()) {
+          if (pick_mode_ == LevelCompactionPickMode::kAny &&
+              PickIntraL0Compaction()) {
             output_level_ = 0;
             compaction_reason_ = CompactionReason::kLevelL0FilesNum;
             break;
@@ -1135,7 +1148,8 @@ void LevelCompactionBuilder::SetupInitialFiles() {
 
   // if we didn't find a compaction, check if there are any files marked for
   // compaction
-  if (start_level_inputs_.empty()) {
+  if (pick_mode_ == LevelCompactionPickMode::kAny &&
+      start_level_inputs_.empty()) {
     is_manual_ = true;
     parent_index_ = base_index_ = -1;
     PickFilesMarkedForCompaction();
@@ -1435,7 +1449,17 @@ Compaction* LevelCompactionPicker::PickCompaction(
     const std::string& cf_name, const MutableCFOptions& mutable_cf_options,
     VersionStorageInfo* vstorage, LogBuffer* log_buffer) {
   LevelCompactionBuilder builder(cf_name, vstorage, this, log_buffer,
-                                 mutable_cf_options, ioptions_);
+                                 mutable_cf_options, ioptions_,
+                                 LevelCompactionPickMode::kAny);
+  return builder.PickCompaction();
+}
+
+Compaction* LevelCompactionPicker::PickL0ToBaseLevelCompaction(
+    const std::string& cf_name, const MutableCFOptions& mutable_cf_options,
+    VersionStorageInfo* vstorage, LogBuffer* log_buffer) {
+  LevelCompactionBuilder builder(cf_name, vstorage, this, log_buffer,
+                                 mutable_cf_options, ioptions_,
+                                 LevelCompactionPickMode::kL0ToBaseLevel);
   return builder.PickCompaction();
 }
 

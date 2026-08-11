@@ -803,11 +803,12 @@ class DBImpl : public DB {
   static void BGWorkFlush(void* db);
   static void BGWorkPurge(void* arg);
   static void UnscheduleCallback(void* arg);
-  void BackgroundCallCompaction(void* arg);
+  void BackgroundCallCompaction(void* arg, bool is_high_pri);
   void BackgroundCallFlush();
   void BackgroundCallPurge();
   Status BackgroundCompaction(bool* madeProgress, JobContext* job_context,
-                              LogBuffer* log_buffer, void* m = 0);
+                              LogBuffer* log_buffer, void* m = 0,
+                              bool is_high_pri = false);
   Status BackgroundFlush(bool* madeProgress, JobContext* job_context,
                          LogBuffer* log_buffer);
 
@@ -1062,9 +1063,11 @@ class DBImpl : public DB {
 
   // count how many background compactions are running or have been scheduled
   int bg_compaction_scheduled_;
-
-    // count how many background compactions are running or have been scheduled
-  int bg_l0_compaction_scheduled_;
+  // HIGH-priority compactions share the HIGH thread-pool queue with flushes.
+  // UnSchedule() matches queued jobs by the tag pointer, so compactions need a
+  // distinct tag for shutdown accounting. The tag value is unused; only its
+  // address identifies the jobs.
+  char high_pri_compaction_tag_;
 
   // stores the number of compactions are currently running
   int num_running_compactions_;
@@ -1102,6 +1105,7 @@ class DBImpl : public DB {
   struct CompactionArg {
     DBImpl* db;
     ManualCompaction* m;
+    bool is_high_pri;
   };
 
   // Have we encountered a background error in paranoid mode?

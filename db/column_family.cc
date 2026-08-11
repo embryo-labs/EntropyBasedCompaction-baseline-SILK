@@ -819,6 +819,19 @@ Compaction* ColumnFamilyData::PickCompaction(
   return result;
 }
 
+Compaction* ColumnFamilyData::PickL0ToBaseLevelCompaction(
+    const MutableCFOptions& mutable_options, LogBuffer* log_buffer) {
+  assert(ioptions_.compaction_style == kCompactionStyleLevel);
+  auto* level_compaction_picker =
+      static_cast<LevelCompactionPicker*>(compaction_picker_.get());
+  auto* result = level_compaction_picker->PickL0ToBaseLevelCompaction(
+      GetName(), mutable_options, current_->storage_info(), log_buffer);
+  if (result != nullptr) {
+    result->SetInputVersion(current_);
+  }
+  return result;
+}
+
 bool ColumnFamilyData::RangeOverlapWithCompaction(
     const Slice& smallest_user_key, const Slice& largest_user_key,
     int level) const {

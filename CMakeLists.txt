@@ -32,7 +32,7 @@
 # 3. cmake ..
 # 4. make -j
 
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 3.10)
 project(rocksdb)
 
 if(POLICY CMP0042)
@@ -62,6 +62,12 @@ else()
     add_definitions(-DSNAPPY)
     include_directories(${SNAPPY_INCLUDE_DIR})
     list(APPEND THIRDPARTY_LIBS ${SNAPPY_LIBRARIES})
+  endif()
+  option(WITH_GFLAGS "build with GFlags" ON)
+  if(WITH_GFLAGS)
+    find_package(gflags REQUIRED)
+    add_definitions(-DGFLAGS=gflags)
+    list(APPEND THIRDPARTY_LIBS gflags)
   endif()
 endif()
 
@@ -172,7 +178,7 @@ else()
   if(MINGW)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-format")
   endif()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
   if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -fno-omit-frame-pointer")
     include(CheckCXXCompilerFlag)
@@ -458,6 +464,7 @@ set(SOURCES
         util/filename.cc
         util/filter_policy.cc
         util/hash.cc
+        util/hyperloglog.cc
         util/log_buffer.cc
         util/murmurhash.cc
         util/random.cc
@@ -565,7 +572,7 @@ else()
                         LINKER_LANGUAGE CXX
                         VERSION ${ROCKSDB_VERSION}
                         SOVERSION ${ROCKSDB_VERSION_MAJOR}
-                        CXX_STANDARD 11
+                        CXX_STANDARD 17
                         OUTPUT_NAME "rocksdb")
 endif()
 

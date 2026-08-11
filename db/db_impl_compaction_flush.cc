@@ -939,6 +939,7 @@ Status DBImpl::RunManualCompaction(ColumnFamilyData* cfd, int input_level,
       ca = new CompactionArg;
       ca->db = this;
       ca->m = &manual;
+      ca->is_high_pri = false;
       manual.incomplete = false;
       bg_compaction_scheduled_++;
       env_->Schedule(&DBImpl::BGWorkCompaction, ca, Env::Priority::LOW, this,
@@ -1076,20 +1077,22 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
 
   ColumnFamilyData* cfd = static_cast<ColumnFamilyHandleImpl*>(DefaultColumnFamily())->cfd();
   VersionStorageInfo* vstorage = cfd->current()->storage_info();
-  if (env_->GetThreadPoolQueueLen(Env::Priority::HIGH) < 2 &&
-      ( num_running_flushes_ < 2 ||    
-      unscheduled_flushes_ < 2 ) &&
-      unscheduled_compactions_ > 0 &&  
-      vstorage->NumLevelFiles(0) >= 4) {
-    
+  // Only L0-to-base-level compactions use the HIGH thread pool. RocksDB allows
+  // only one such compaction to run at a time, so SILK adds only one compaction
+  // thread to the HIGH pool (paper Section 5.2.2).
+  if (cfd->ioptions()->compaction_style == kCompactionStyleLevel &&
+      !cfd->compaction_picker()->IsLevel0CompactionInProgress() &&
+      env_->GetThreadPoolQueueLen(Env::Priority::HIGH) < 2 &&
+      (num_running_flushes_ < 2 || unscheduled_flushes_ < 2) &&
+      unscheduled_compactions_ > 0 && vstorage->NumLevelFiles(0) >= 4) {
     CompactionArg* ca = new CompactionArg;
     ca->db = this;
     ca->m = nullptr;
+    ca->is_high_pri = true;
     bg_compaction_scheduled_++;
     unscheduled_compactions_--;
-    env_->Schedule(&DBImpl::BGWorkCompaction, ca, Env::Priority::HIGH, this,
-                   &DBImpl::UnscheduleCallback);
-
+    env_->Schedule(&DBImpl::BGWorkCompaction, ca, Env::Priority::HIGH,
+                   &high_pri_compaction_tag_, &DBImpl::UnscheduleCallback);
   }
 
   if (bg_compaction_paused_ > 0) {
@@ -1108,6 +1111,7 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
     CompactionArg* ca = new CompactionArg;
     ca->db = this;
     ca->m = nullptr;
+    ca->is_high_pri = false;
     bg_compaction_scheduled_++;
     unscheduled_compactions_--;
     env_->Schedule(&DBImpl::BGWorkCompaction, ca, Env::Priority::LOW, this,
@@ -1212,7 +1216,8 @@ void DBImpl::BGWorkCompaction(void* arg) {
   delete reinterpret_cast<CompactionArg*>(arg);
   IOSTATS_SET_THREAD_POOL_ID(Env::Priority::LOW);
   TEST_SYNC_POINT("DBImpl::BGWorkCompaction");
-  reinterpret_cast<DBImpl*>(ca.db)->BackgroundCallCompaction(ca.m);
+  reinterpret_cast<DBImpl*>(ca.db)->BackgroundCallCompaction(ca.m,
+                                                             ca.is_high_pri);
 }
 
 void DBImpl::BGWorkPurge(void* db) {
@@ -1355,7 +1360,7 @@ void DBImpl::BackgroundCallFlush() {
   }
 }
 
-void DBImpl::BackgroundCallCompaction(void* arg) {
+void DBImpl::BackgroundCallCompaction(void* arg, bool is_high_pri) {
   bool made_progress = false;
   ManualCompaction* m = reinterpret_cast<ManualCompaction*>(arg);
   JobContext job_context(next_job_id_.fetch_add(1), true);
@@ -1376,8 +1381,8 @@ void DBImpl::BackgroundCallCompaction(void* arg) {
         CaptureCurrentFileNumberInPendingOutputs();
 
     assert(bg_compaction_scheduled_);
-    Status s =
-        BackgroundCompaction(&made_progress, &job_context, &log_buffer, m);
+    Status s = BackgroundCompaction(&made_progress, &job_context, &log_buffer,
+                                    m, is_high_pri);
     TEST_SYNC_POINT("BackgroundCallCompaction:1");
     if (!s.ok() && !s.IsShutdownInProgress()) {
       // Wait a little bit before retrying background compaction in
@@ -1448,7 +1453,8 @@ void DBImpl::BackgroundCallCompaction(void* arg) {
 
 Status DBImpl::BackgroundCompaction(bool* made_progress,
                                     JobContext* job_context,
-                                    LogBuffer* log_buffer, void* arg) {
+                                    LogBuffer* log_buffer, void* arg,
+                                    bool is_high_pri) {
   ManualCompaction* manual_compaction =
       reinterpret_cast<ManualCompaction*>(arg);
   *made_progress = false;
@@ -1547,7 +1553,12 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
       // compaction is not necessary. Need to make sure mutex is held
       // until we make a copy in the following code
       TEST_SYNC_POINT("DBImpl::BackgroundCompaction():BeforePickCompaction");
-      c.reset(cfd->PickCompaction(*mutable_cf_options, log_buffer));
+      if (is_high_pri) {
+        c.reset(
+            cfd->PickL0ToBaseLevelCompaction(*mutable_cf_options, log_buffer));
+      } else {
+        c.reset(cfd->PickCompaction(*mutable_cf_options, log_buffer));
+      }
       TEST_SYNC_POINT("DBImpl::BackgroundCompaction():AfterPickCompaction");
       if (c != nullptr) {
         // update statistics

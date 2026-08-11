@@ -162,6 +162,29 @@ TEST_F(CompactionPickerTest, Level0Trigger) {
   ASSERT_EQ(2U, compaction->input(0, 1)->fd.GetNumber());
 }
 
+TEST_F(CompactionPickerTest, PickL0ToBaseLevelCompactionDoesNotFallBack) {
+  NewVersionStorage(6, kCompactionStyleLevel);
+  mutable_cf_options_.level0_file_num_compaction_trigger = 2;
+  mutable_cf_options_.max_bytes_for_level_base = 1000;
+  mutable_cf_options_.max_bytes_for_level_multiplier = 10;
+  Add(0, 1U, "100", "150");
+  Add(0, 2U, "151", "200");
+  Add(2, 3U, "300", "400", 1000000U);
+  UpdateVersionStorageInfo();
+
+  std::unique_ptr<Compaction> l0_compaction(
+      level_compaction_picker.PickL0ToBaseLevelCompaction(
+          cf_name_, mutable_cf_options_, vstorage_.get(), &log_buffer_));
+  ASSERT_TRUE(l0_compaction != nullptr);
+  ASSERT_EQ(0, l0_compaction->level());
+  ASSERT_EQ(vstorage_->base_level(), l0_compaction->output_level());
+
+  std::unique_ptr<Compaction> blocked_l0_compaction(
+      level_compaction_picker.PickL0ToBaseLevelCompaction(
+          cf_name_, mutable_cf_options_, vstorage_.get(), &log_buffer_));
+  ASSERT_TRUE(blocked_l0_compaction == nullptr);
+}
+
 TEST_F(CompactionPickerTest, Level1Trigger) {
   NewVersionStorage(6, kCompactionStyleLevel);
   Add(1, 66U, "150", "200", 1000000000U);

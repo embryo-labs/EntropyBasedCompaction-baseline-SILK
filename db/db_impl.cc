@@ -169,7 +169,6 @@ DBImpl::DBImpl(const DBOptions& options, const std::string& dbname)
       unscheduled_flushes_(0),
       unscheduled_compactions_(0),
       bg_compaction_scheduled_(0),
-      bg_l0_compaction_scheduled_(0),
       num_running_compactions_(0),
       bg_flush_scheduled_(0),
       num_running_flushes_(0),
@@ -257,9 +256,12 @@ DBImpl::~DBImpl() {
   // (to consider: moving all the waiting into CancelAllBackgroundWork(true))
   CancelAllBackgroundWork(false);
   int compactions_unscheduled = env_->UnSchedule(this, Env::Priority::LOW);
+  int high_pri_compactions_unscheduled =
+      env_->UnSchedule(&high_pri_compaction_tag_, Env::Priority::HIGH);
   int flushes_unscheduled = env_->UnSchedule(this, Env::Priority::HIGH);
   mutex_.Lock();
-  bg_compaction_scheduled_ -= compactions_unscheduled;
+  bg_compaction_scheduled_ -=
+      compactions_unscheduled + high_pri_compactions_unscheduled;
   bg_flush_scheduled_ -= flushes_unscheduled;
 
   // Wait for background work to finish
@@ -980,8 +982,9 @@ Status DBImpl::GetImpl(const ReadOptions& read_options,
     sv->current->Get(read_options, lkey, pinnable_val, &s, &merge_context,
                      &range_del_agg, value_found);
     RecordTick(stats_, MEMTABLE_MISS);
-    s = Status::TryAgain();
-    //READ from DISK <-- shouldn't do this. Should return and re-schedule in a different queue. 
+    // s = Status::TryAgain();
+    // READ from DISK <-- shouldn't do this. Should return and re-schedule in a
+    // different queue.
   }
 
   {
