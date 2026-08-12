@@ -2677,6 +2677,7 @@ TEST_P(DBCompactionDirectIOTest, DirectIO) {
 TEST_F(DBCompactionTest, ReleaseCompactionDuringManifestWrite) {
   Options options = CurrentOptions();
   options.compaction_style = kCompactionStyleLevel;
+  options.disable_auto_compactions = true;
   options.max_background_compactions = 3;
   options.num_levels = 4;
   env_->SetBackgroundThreads(3, Env::Priority::LOW);
@@ -2711,6 +2712,16 @@ TEST_F(DBCompactionTest, ReleaseCompactionDuringManifestWrite) {
   ASSERT_EQ(3, NumTableFilesAtLevel(3));
 
   SyncPoint::GetInstance()->ClearAllCallBacks();
+  std::atomic<int> manual_compaction_count{0};
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionJob::Run():Start", [&](void*) {
+        int count = manual_compaction_count.fetch_add(1);
+        if (count == 0) {
+          TEST_SYNC_POINT("DBCompactionTest::FirstManualCompactionStarted");
+        } else if (count == 1) {
+          TEST_SYNC_POINT("DBCompactionTest::SecondManualCompactionStarted");
+        }
+      });
   std::atomic<int> manifest_writer_count{0};
   SyncPoint::GetInstance()->SetCallBack(
       "VersionSet::LogAndApply:BeforeWriterWaiting", [&](void*) {
@@ -2719,7 +2730,11 @@ TEST_F(DBCompactionTest, ReleaseCompactionDuringManifestWrite) {
         }
       });
   SyncPoint::GetInstance()->LoadDependency(
-      {{"DBCompactionTest::AllManifestWritersReady",
+      {{"DBCompactionTest::FirstManualCompactionStarted",
+        "DBCompactionTest::WaitForFirstManualCompaction"},
+       {"DBCompactionTest::SecondManualCompactionStarted",
+        "DBCompactionTest::WaitForSecondManualCompaction"},
+       {"DBCompactionTest::AllManifestWritersReady",
         "VersionSet::LogAndApply:WriteManifest"}});
 
   std::atomic<int> completed_compaction_count{0};
@@ -2745,6 +2760,9 @@ TEST_F(DBCompactionTest, ReleaseCompactionDuringManifestWrite) {
         cfd, 2 /* input_level */, 3 /* output_level */, 0 /* output_path_id */,
         &begin, &end, false /* exclusive */));
   });
+
+  TEST_SYNC_POINT("DBCompactionTest::WaitForFirstManualCompaction");
+
   threads.emplace_back([&]() {
     std::string begin_string = Key(10);
     std::string end_string = Key(11);
@@ -2754,6 +2772,8 @@ TEST_F(DBCompactionTest, ReleaseCompactionDuringManifestWrite) {
         cfd, 2 /* input_level */, 3 /* output_level */, 0 /* output_path_id */,
         &begin, &end, false /* exclusive */));
   });
+
+  TEST_SYNC_POINT("DBCompactionTest::WaitForSecondManualCompaction");
 
   std::string begin_string = Key(100);
   std::string end_string = Key(101);
