@@ -9,7 +9,6 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <iostream>
 #if defined(OS_LINUX)
 #include <linux/fs.h>
 #endif
@@ -763,12 +762,7 @@ class PosixEnv : public Env {
   // Allow increasing the number of worker threads.
   virtual void SetBackgroundThreads(int num, Priority pri) override {
     assert(pri >= Priority::LOW && pri <= Priority::HIGH);
-    printf("----->>>>> Set priority %d for %d threads\n", pri, num);
     thread_pools_[pri].SetBackgroundThreads(num);
-    for (int i = 0 ; i < Env::Priority::TOTAL; ++i){
-      std::cout << "PRIORITY Pool " << i << " : " << thread_pools_[i].GetThreadPriority() << "\n";
-    }
-    
   }
 
   virtual int GetBackgroundThreads(Priority pri) override {

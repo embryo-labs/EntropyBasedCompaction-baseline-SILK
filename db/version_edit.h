@@ -115,7 +115,7 @@ struct FileMetaData {
   uint64_t file_num_high;
   int num_sst_next_level_overlap;
   int hll_add_count;
-  
+
   FileMetaData()
       : smallest_seqno(kMaxSequenceNumber),
         largest_seqno(0),
@@ -131,7 +131,7 @@ struct FileMetaData {
         marked_for_compaction(false),
         hll(std::make_shared<HyperLogLog>(12)),
         reclaim_ratio(0.0),
-        file_num_low(-1),//(ULLONG_MAX),
+        file_num_low(-1),
         file_num_high(-1),
         num_sst_next_level_overlap(-1),
         hll_add_count(0) {}
@@ -145,12 +145,10 @@ struct FileMetaData {
     largest.DecodeFrom(key);
     smallest_seqno = std::min(smallest_seqno, seqno);
     largest_seqno = std::max(largest_seqno, seqno);
-
     const Slice& user_key = ExtractUserKey(key);
     int64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
     hll->AddHash(hash);
     ++hll_add_count;
-    //fprintf(stdout, "key=%s\n hash=%ld\n", user_key.ToString(true).c_str(), hash);
   }
 };
 
@@ -242,14 +240,12 @@ class VersionEdit {
     f.smallest_seqno = smallest_seqno;
     f.largest_seqno = largest_seqno;
     f.marked_for_compaction = marked_for_compaction;
-
-    f.hll = hll;;
+    f.hll = hll;
     f.reclaim_ratio = reclaim_ratio;
-    f.file_num_low = file_num_low;;
+    f.file_num_low = file_num_low;
     f.file_num_high = file_num_high;
     f.num_sst_next_level_overlap = num_sst_next_level_overlap;
     f.hll_add_count = hll_add_count;
-
     new_files_.emplace_back(level, std::move(f));
   }
 

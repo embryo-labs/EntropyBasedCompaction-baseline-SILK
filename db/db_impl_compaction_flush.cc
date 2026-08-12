@@ -1032,9 +1032,6 @@ Status DBImpl::EnableAutoCompaction(
 
 void DBImpl::MaybeScheduleFlushOrCompaction() {
   mutex_.AssertHeld();
-
-  printf("[COMPACTION-QUEUES] Compactions waiting: %d \n", unscheduled_compactions_ + bg_compaction_scheduled_);
-
   if (!opened_successfully_) {
     // Compaction may introduce data race to DB open
     return;
@@ -1071,17 +1068,14 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
   // SILK. If necessary, here we can schedule a HIGH priority compaction
   // This will be (L0->L1) compactions because they are picked first by the
   // compaction picker.
-  // This compaction has priority and it will be scheduled even if background 
+  // This compaction has priority and it will be scheduled even if background
   // compactions are paused by bg_compaction_paused_
-
   ColumnFamilyData* cfd = static_cast<ColumnFamilyHandleImpl*>(DefaultColumnFamily())->cfd();
   VersionStorageInfo* vstorage = cfd->current()->storage_info();
   if (env_->GetThreadPoolQueueLen(Env::Priority::HIGH) < 2 &&
-      ( num_running_flushes_ < 2 ||    
-      unscheduled_flushes_ < 2 ) &&
-      unscheduled_compactions_ > 0 &&  
+      (num_running_flushes_ < 2 || unscheduled_flushes_ < 2) &&
+      unscheduled_compactions_ > 0 &&
       vstorage->NumLevelFiles(0) >= 4) {
-    
     CompactionArg* ca = new CompactionArg;
     ca->db = this;
     ca->m = nullptr;
@@ -1089,7 +1083,6 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
     unscheduled_compactions_--;
     env_->Schedule(&DBImpl::BGWorkCompaction, ca, Env::Priority::HIGH, this,
                    &DBImpl::UnscheduleCallback);
-
   }
 
   if (bg_compaction_paused_ > 0) {
@@ -1299,9 +1292,7 @@ void DBImpl::BackgroundCallFlush() {
     auto pending_outputs_inserted_elem =
         CaptureCurrentFileNumberInPendingOutputs();
 
-
     Status s = BackgroundFlush(&made_progress, &job_context, &log_buffer);
-
     if (!s.ok() && !s.IsShutdownInProgress()) {
       // Wait a little bit before retrying background flush in
       // case this is an environmental problem and we do not want to

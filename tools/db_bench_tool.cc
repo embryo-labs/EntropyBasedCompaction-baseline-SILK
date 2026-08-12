@@ -1955,7 +1955,6 @@ struct ThreadState {
   int last_thread_bucket1;//only used in QueuingMeasurements test for load generator thread
   int last_thread_bucket2;//only used in QueuingMeasurements test for load generator thread
 
-  //int queue[1000000];
   bool init =false;
   /* implicit */ ThreadState(int index)
       : tid(index),
@@ -2838,12 +2837,10 @@ void VerifyDBFromDB(std::string& truth_db_name) {
     shared.send_low_workload = 0;
     shared.start = false;
     if (FLAGS_benchmark_write_rate_limit > 0) {
-      printf(">>>> FLAGS_benchmark_write_rate_limit WRITE RATE LIMITER\n");  
       shared.write_rate_limiter.reset(
           NewGenericRateLimiter(FLAGS_benchmark_write_rate_limit));
     }
     if (FLAGS_benchmark_read_rate_limit > 0) {
-       printf(">>>> FLAGS_benchmark_read_rate_limit READ RATE LIMITER\n");    
       shared.read_rate_limiter.reset(NewGenericRateLimiter(
           FLAGS_benchmark_read_rate_limit, 100000 /* refill_period_us */,
           10 /* fairness */, RateLimiter::Mode::kReadsOnly));
@@ -3418,8 +3415,6 @@ void VerifyDBFromDB(std::string& truth_db_name) {
                 "new_table_reader_for_compaction_inputs set\n");
         exit(1);
       }
-      printf(">>>> FLAGS_rate_limiter_bytes_per_sec RATE LIMITER\n");
-
       if (FLAGS_autotuned_rate_limiter == true){
         options.rate_limiter.reset(NewGenericRateLimiter(
           FLAGS_rate_limiter_bytes_per_sec, 100 * 1000 /* refill_period_us */,
@@ -4539,8 +4534,6 @@ void VerifyDBFromDB(std::string& truth_db_name) {
 
     std::unique_ptr<RateLimiter> write_rate_limiter;
     if (FLAGS_benchmark_write_rate_limit > 0) {
-
-      printf (">>>> FLAGS_benchmark_write_rate_limit  BGWriter\n"); 
       write_rate_limiter.reset(
           NewGenericRateLimiter(FLAGS_benchmark_write_rate_limit));
     }
@@ -4816,7 +4809,6 @@ void VerifyDBFromDB(std::string& truth_db_name) {
         Status s = db->Get(options, key, &value);
 
        if (!s.ok()) {
-          //fprintf(stderr, "get error: %s\n", s.ToString().c_str());
            // we continue after error rather than exiting so that we can
            // find more errors if any
         } else if (!s.IsNotFound()) {
@@ -4986,7 +4978,6 @@ void LongPeakTest(ThreadState* thread) {
                 abs(prev_bandwidth_compaction_MBPS - cur_bandiwdth_compaction_MBPS) >= 10 ){
                 printf("Adjust-compaction-rate; current-client-bandwidth: %d ops/s; Bandwidth-taken: %d MB/s; Left-for-compaction: %d\n", 
                     cur_throughput, cur_bandwidth_user_ops_MBPS, cur_bandiwdth_compaction_MBPS);
-                //DB* db = SelectDB(thread);
                 db->GetOptions().rate_limiter->SetBytesPerSecond(cur_bandiwdth_compaction_MBPS * 1000 * 1000);
                 prev_bandwidth_compaction_MBPS = cur_bandiwdth_compaction_MBPS;
             }
@@ -4995,7 +4986,6 @@ void LongPeakTest(ThreadState* thread) {
         // END COMMENT TO TOGGLE SILK TESTING 
 
         } else if (thread->tid > 8 && thread->tid < 14) {
-            //printf("I'm the load generator!\n");
             //Generate a random number
             int val_size = FLAGS_value_size;;
             std::chrono::microseconds ms = std::chrono::duration_cast< std::chrono::milliseconds >
@@ -5007,8 +4997,6 @@ void LongPeakTest(ThreadState* thread) {
 
             vals_generated++;
 
-            //std::this_thread::sleep_for(std::chrono::microseconds(200)); // equivalent to 5k request/s per load generating thread
-            
             if(thread->shared->send_low_workload == 1){
                 usleep(700);
             } else{
@@ -5052,7 +5040,6 @@ void LongPeakTest(ThreadState* thread) {
                 std::string a;
                 int rand_key = thread->rand.Next() % FLAGS_num;
 
-                //GenerateKeyFromInt(rand_key, FLAGS_num, &key);
                 a = std::to_string(rand_key);
                 a += '\0';
                 key = Slice(a.c_str()); 
@@ -5155,7 +5142,6 @@ void ReadRandomWriteRandomDifferentValueSizesPerThread(ThreadState* thread) {
         //In this test have values randomly fluctuate between 255B and 32000B
         // In this test, the value size is different depending on what thread is writing. 
 
-        //printf("Size %d, thread %d\n", value_size_random, thread->tid);
         Status s = db->Put(write_options_, key, gen.Generate(value_sizes_per_thread[thread->tid]));
         if (!s.ok()) {
           fprintf(stderr, "put error: %s\n", s.ToString().c_str());
@@ -5238,7 +5224,6 @@ void ReadRandomWriteRandomDifferentValueSizesPerThreadComparison(ThreadState* th
         //In this test have values randomly fluctuate between 255B and 32000B
         // In this test, the value size is different depending on what thread is writing. 
 
-        //printf("Size %d, thread %d\n", value_size_random, thread->tid);
         Status s = db->Put(write_options_, key, gen.Generate(value_sizes_per_thread[thread->rand.Next()%8]));
         if (!s.ok()) {
           fprintf(stderr, "put error: %s\n", s.ToString().c_str());
@@ -5308,7 +5293,6 @@ void ReadRandomWriteRandomDifferentValueSizesPerThreadComparison(ThreadState* th
         //The generate function takes the value size in bytes.
         //In this test have values randomly fluctuate between 255B and 255000B
         int value_size_random = 255 + (thread->rand.Next() % (200000 - 255));
-        //printf("Size %d, thread %d\n", value_size_random, thread->tid);
         Status s = db->Put(write_options_, key, gen.Generate(value_size_random));
         if (!s.ok()) {
           fprintf(stderr, "put error: %s\n", s.ToString().c_str());
@@ -5556,11 +5540,8 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
         //write
         Status s = db->Put(write_options_, key, gen.Generate(value_size_));
         if (!s.ok()) {
-          //fprintf(stderr, "put error: %s\n", s.ToString().c_str());
-          //exit(1);
         }
         writes_done++;
-        //printf("K= %d\n", k);
         thread->stats.FinishedOps(nullptr, db, 1, kWrite);
     }    
       
@@ -5594,7 +5575,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     Slice key = AllocateKey(&key_guard);
 
     if (FLAGS_benchmark_write_rate_limit > 0) {
-       printf(">>>> FLAGS_benchmark_write_rate_limit YCSBA \n");
       thread->shared->write_rate_limiter.reset(
           NewGenericRateLimiter(FLAGS_benchmark_write_rate_limit));
     }
@@ -5618,8 +5598,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
             //read
             Status s = db->Get(options, key, &value);
             if (!s.ok() && !s.IsNotFound()) {
-              //fprintf(stderr, "k=%d; get error: %s\n", k, s.ToString().c_str());
-              //exit(1);
               // we continue after error rather than exiting so that we can
               // find more errors if any
             } else if (!s.IsNotFound()) {
@@ -5639,8 +5617,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
             }
             Status s = db->Put(write_options_, key, gen.Generate(value_size_));
             if (!s.ok()) {
-              //fprintf(stderr, "put error: %s\n", s.ToString().c_str());
-              //exit(1);
             } else{
              writes_done++;
              thread->stats.FinishedOps(nullptr, db, 1, kWrite);
@@ -5702,7 +5678,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
         //read
         Status s = db->Get(options, key, &value);
         if (!s.ok() && !s.IsNotFound()) {
-          //fprintf(stderr, "get error: %s\n", s.ToString().c_str());
           // we continue after error rather than exiting so that we can
           // find more errors if any
         } else if (!s.IsNotFound()) {
@@ -5716,8 +5691,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
         Status s = db->Get(options, key, &value);
         s = db->Put(write_options_, key, gen.Generate(value_size_));
         if (!s.ok()) {
-          //fprintf(stderr, "put error: %s\n", s.ToString().c_str());
-          //exit(1);
         } else{
             writes_done++;
             thread->stats.FinishedOps(nullptr, db, 1, kWrite);
@@ -5781,7 +5754,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
       }
       reads_done++;
       
-      //std::cout << k << "\n";
 
     } 
     char msg[100];
@@ -5842,7 +5814,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
         //read
         Status s = db->Get(options, key, &value);
         if (!s.ok() && !s.IsNotFound()) {
-          //fprintf(stderr, "get error: %s\n", s.ToString().c_str());
           // we continue after error rather than exiting so that we can
           // find more errors if any
         } else if (!s.IsNotFound()) {
@@ -5855,8 +5826,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
         //write
         Status s = db->Put(write_options_, key, gen.Generate(value_size_));
         if (!s.ok()) {
-          //fprintf(stderr, "put error: %s\n", s.ToString().c_str());
-          //exit(1);
         } else{
             writes_done++;
             thread->stats.FinishedOps(nullptr, db, 1, kWrite);
@@ -5936,7 +5905,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
         int64_t bytes = 0;
         for (iter->Seek(key); i < 100 && iter->Valid(); iter->Next()) {
           bytes += iter->key().size() + iter->value().size();
-          //thread->stats.FinishedOps(nullptr, db, 1, kRead);
           ++i;
 
         }
@@ -5949,8 +5917,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
         //write
         Status s = db->Put(write_options_, key, gen.Generate(value_size_));
         if (!s.ok()) {
-          //fprintf(stderr, "put error: %s\n", s.ToString().c_str());
-          //exit(1);
         } else{
             writes_done++;
             thread->stats.FinishedOps(nullptr, db, 1, kWrite);
@@ -6014,7 +5980,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
         //read
         Status s = db->Get(options, key, &value);
         if (!s.ok() && !s.IsNotFound()) {
-          //fprintf(stderr, "get error: %s\n", s.ToString().c_str());
           // we continue after error rather than exiting so that we can
           // find more errors if any
         } else if (!s.IsNotFound()) {
@@ -6028,8 +5993,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
         Status s = db->Get(options, key, &value);
         s = db->Put(write_options_, key, gen.Generate(value_size_));
         if (!s.ok()) {
-          //fprintf(stderr, "put error: %s\n", s.ToString().c_str());
-          //exit(1);
         } else{
             writes_done++;
             thread->stats.FinishedOps(nullptr, db, 1, kWrite);
@@ -6635,7 +6598,6 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
 
     std::unique_ptr<RateLimiter> write_rate_limiter;
     if (FLAGS_benchmark_write_rate_limit > 0) {
-      printf(">>>> FLAGS_benchmark_write_rate_limit TimeSeriesWrite\n");
       write_rate_limiter.reset(
           NewGenericRateLimiter(FLAGS_benchmark_write_rate_limit));
     }
