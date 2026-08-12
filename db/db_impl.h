@@ -1063,6 +1063,10 @@ class DBImpl : public DB {
 
   // count how many background compactions are running or have been scheduled
   int bg_compaction_scheduled_;
+  // HIGH compactions use a separate pool and do not consume LOW compaction
+  // slots. The picker independently restricts these jobs to L0-to-base-level
+  // compactions.
+  int bg_high_pri_compaction_scheduled_;
   // HIGH-priority compactions share the HIGH thread-pool queue with flushes.
   // UnSchedule() matches queued jobs by the tag pointer, so compactions need a
   // distinct tag for shutdown accounting. The tag value is unused; only its

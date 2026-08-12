@@ -568,12 +568,16 @@ Status DBImpl::CompactFilesImpl(
   TEST_SYNC_POINT("CompactFilesImpl:3");
   mutex_.Lock();
 
-  Status status = compaction_job.Install(*c->mutable_cf_options());
+  bool compaction_released = false;
+  Status status =
+      compaction_job.Install(*c->mutable_cf_options(), &compaction_released);
   if (status.ok()) {
     InstallSuperVersionAndScheduleWorkWrapper(
         c->column_family_data(), job_context, *c->mutable_cf_options());
   }
-  c->ReleaseCompactionFiles(s);
+  if (!compaction_released) {
+    c->ReleaseCompactionFiles(status);
+  }
 
   ReleaseFileNumberFromPendingOutputs(pending_outputs_inserted_elem);
 
@@ -1072,15 +1076,17 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
   // thread to the HIGH pool (paper Section 5.2.2).
   if (cfd->ioptions()->compaction_style == kCompactionStyleLevel &&
       !cfd->compaction_picker()->IsLevel0CompactionInProgress() &&
+      bg_high_pri_compaction_scheduled_ == 0 &&
       env_->GetThreadPoolQueueLen(Env::Priority::HIGH) < 2 &&
       (num_running_flushes_ < 2 || unscheduled_flushes_ < 2) &&
-      unscheduled_compactions_ > 0 && vstorage->NumLevelFiles(0) >= 4) {
+      unscheduled_compactions_ > 0 && cfd->pending_compaction() &&
+      vstorage->NumLevelFiles(0) >= 4) {
     CompactionArg* ca = new CompactionArg;
     ca->db = this;
     ca->m = nullptr;
     ca->is_high_pri = true;
     bg_compaction_scheduled_++;
-    unscheduled_compactions_--;
+    bg_high_pri_compaction_scheduled_++;
     env_->Schedule(&DBImpl::BGWorkCompaction, ca, Env::Priority::HIGH,
                    &high_pri_compaction_tag_, &DBImpl::UnscheduleCallback);
   }
@@ -1096,7 +1102,8 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
     return;
   }
 
-  while (bg_compaction_scheduled_ < bg_job_limits.max_compactions &&
+  while (bg_compaction_scheduled_ - bg_high_pri_compaction_scheduled_ <
+             bg_job_limits.max_compactions &&
          unscheduled_compactions_ > 0) {
     CompactionArg* ca = new CompactionArg;
     ca->db = this;
@@ -1416,6 +1423,10 @@ void DBImpl::BackgroundCallCompaction(void* arg, bool is_high_pri) {
 
     assert(num_running_compactions_ > 0);
     num_running_compactions_--;
+    if (is_high_pri) {
+      assert(bg_high_pri_compaction_scheduled_ > 0);
+      bg_high_pri_compaction_scheduled_--;
+    }
     bg_compaction_scheduled_--;
 
     versions_->GetColumnFamilySet()->FreeDeadColumnFamilies();
@@ -1505,28 +1516,40 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
                ? "(end)"
                : m->manual_end->DebugString().c_str()));
     }
-  } else if (!compaction_queue_.empty()) {
-    if (HaveManualCompaction(compaction_queue_.front())) {
-      // Can't compact right now, but try again later
-      TEST_SYNC_POINT("DBImpl::BackgroundCompaction()::Conflict");
+  } else {
+    ColumnFamilyData* cfd = nullptr;
+    if (is_high_pri) {
+      cfd = static_cast<ColumnFamilyHandleImpl*>(DefaultColumnFamily())->cfd();
+      if (!cfd->pending_compaction() || HaveManualCompaction(cfd)) {
+        return Status::OK();
+      }
+    } else if (!compaction_queue_.empty()) {
+      if (HaveManualCompaction(compaction_queue_.front())) {
+        // Can't compact right now, but try again later
+        TEST_SYNC_POINT("DBImpl::BackgroundCompaction()::Conflict");
 
-      // Stay in the compaction queue.
-      unscheduled_compactions_++;
+        // Stay in the compaction queue.
+        unscheduled_compactions_++;
 
-      return Status::OK();
+        return Status::OK();
+      }
+
+      // cfd is referenced here
+      cfd = PopFirstFromCompactionQueue();
+      // We unreference here because the following code will take a Ref() on
+      // this cfd if it is going to use it (Compaction class holds a
+      // reference).
+      // This will all happen under a mutex so we don't have to be afraid of
+      // somebody else deleting it.
+      if (cfd->Unref()) {
+        delete cfd;
+        // This was the last reference of the column family, so no need to
+        // compact.
+        return Status::OK();
+      }
     }
 
-    // cfd is referenced here
-    auto cfd = PopFirstFromCompactionQueue();
-    // We unreference here because the following code will take a Ref() on
-    // this cfd if it is going to use it (Compaction class holds a
-    // reference).
-    // This will all happen under a mutex so we don't have to be afraid of
-    // somebody else deleting it.
-    if (cfd->Unref()) {
-      delete cfd;
-      // This was the last reference of the column family, so no need to
-      // compact.
+    if (cfd == nullptr) {
       return Status::OK();
     }
 
@@ -1564,7 +1587,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
         // files that are currently being compacted. If we need another
         // compaction, we might be able to execute it in parallel, so we add it
         // to the queue and schedule a new thread.
-        if (cfd->NeedsCompaction()) {
+        if (!cfd->pending_compaction() && cfd->NeedsCompaction()) {
           // Yes, we need more compactions!
           AddToCompactionQueue(cfd);
           ++unscheduled_compactions_;
@@ -1574,6 +1597,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     }
   }
 
+  bool compaction_released = false;
   if (!c) {
     // Nothing to do
     ROCKS_LOG_BUFFER(log_buffer, "Compaction nothing to do");
@@ -1590,9 +1614,14 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     for (const auto& f : *c->inputs(0)) {
       c->edit()->DeleteFile(c->level(), f->fd.GetNumber());
     }
-    status = versions_->LogAndApply(c->column_family_data(),
-                                    *c->mutable_cf_options(), c->edit(),
-                                    &mutex_, directories_.GetDbDir());
+    status = versions_->LogAndApply(
+        c->column_family_data(), *c->mutable_cf_options(), c->edit(), &mutex_,
+        directories_.GetDbDir(), false /* new_descriptor_log */,
+        nullptr /* column_family_options */,
+        [&c, &compaction_released](const Status& callback_status) {
+          c->ReleaseCompactionFiles(callback_status);
+          compaction_released = true;
+        });
     InstallSuperVersionAndScheduleWorkWrapper(
         c->column_family_data(), job_context, *c->mutable_cf_options());
     ROCKS_LOG_BUFFER(log_buffer, "[%s] Deleted %d files\n",
@@ -1635,9 +1664,14 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
       }
     }
 
-    status = versions_->LogAndApply(c->column_family_data(),
-                                    *c->mutable_cf_options(), c->edit(),
-                                    &mutex_, directories_.GetDbDir());
+    status = versions_->LogAndApply(
+        c->column_family_data(), *c->mutable_cf_options(), c->edit(), &mutex_,
+        directories_.GetDbDir(), false /* new_descriptor_log */,
+        nullptr /* column_family_options */,
+        [&c, &compaction_released](const Status& callback_status) {
+          c->ReleaseCompactionFiles(callback_status);
+          compaction_released = true;
+        });
     // Use latest MutableCFOptions
     InstallSuperVersionAndScheduleWorkWrapper(
         c->column_family_data(), job_context, *c->mutable_cf_options());
@@ -1688,7 +1722,8 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     TEST_SYNC_POINT("DBImpl::BackgroundCompaction:NonTrivial:AfterRun");
     mutex_.Lock();
 
-    status = compaction_job.Install(*c->mutable_cf_options());
+    status =
+        compaction_job.Install(*c->mutable_cf_options(), &compaction_released);
     if (status.ok()) {
       InstallSuperVersionAndScheduleWorkWrapper(
           c->column_family_data(), job_context, *c->mutable_cf_options());
@@ -1696,11 +1731,15 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     *made_progress = true;
   }
   if (c != nullptr) {
-    c->ReleaseCompactionFiles(status);
+    if (!compaction_released) {
+      c->ReleaseCompactionFiles(status);
+    }
     *made_progress = true;
     NotifyOnCompactionCompleted(
         c->column_family_data(), c.get(), status,
         compaction_job_stats, job_context->job_id);
+    TEST_SYNC_POINT_CALLBACK("DBImpl::BackgroundCompaction:AfterCompaction",
+                             c->column_family_data());
   }
   // this will unref its input_version and column_family_data
   c.reset();

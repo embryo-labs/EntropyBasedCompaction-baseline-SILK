@@ -20,6 +20,7 @@
 #pragma once
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -631,11 +632,13 @@ class VersionSet {
       const MutableCFOptions& mutable_cf_options, VersionEdit* edit,
       InstrumentedMutex* mu, Directory* db_directory = nullptr,
       bool new_descriptor_log = false,
-      const ColumnFamilyOptions* column_family_options = nullptr) {
+      const ColumnFamilyOptions* column_family_options = nullptr,
+      const std::function<void(const Status&)>& manifest_write_callback = {}) {
     autovector<VersionEdit*> edit_list;
     edit_list.push_back(edit);
     return LogAndApply(column_family_data, mutable_cf_options, edit_list, mu,
-                       db_directory, new_descriptor_log, column_family_options);
+                       db_directory, new_descriptor_log, column_family_options,
+                       manifest_write_callback);
   }
   // The batch version. If edit_list.size() > 1, caller must ensure that
   // no edit in the list column family add or drop
@@ -644,7 +647,8 @@ class VersionSet {
       const MutableCFOptions& mutable_cf_options,
       const autovector<VersionEdit*>& edit_list, InstrumentedMutex* mu,
       Directory* db_directory = nullptr, bool new_descriptor_log = false,
-      const ColumnFamilyOptions* column_family_options = nullptr);
+      const ColumnFamilyOptions* column_family_options = nullptr,
+      const std::function<void(const Status&)>& manifest_write_callback = {});
 
   // Recover the last saved descriptor from persistent storage.
   // If read_only == true, Recover() will not complain if some column families
