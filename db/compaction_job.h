@@ -81,7 +81,8 @@ class CompactionJob {
   Status Run();
 
   // REQUIRED: mutex held
-  Status Install(const MutableCFOptions& mutable_cf_options);
+  Status Install(const MutableCFOptions& mutable_cf_options,
+                 bool* compaction_released);
 
  private:
   struct SubcompactionState;
@@ -101,7 +102,8 @@ class CompactionJob {
       RangeDelAggregator* range_del_agg,
       CompactionIterationStats* range_del_out_stats,
       const Slice* next_table_min_key = nullptr);
-  Status InstallCompactionResults(const MutableCFOptions& mutable_cf_options);
+  Status InstallCompactionResults(const MutableCFOptions& mutable_cf_options,
+                                  bool* compaction_released);
   void RecordCompactionIOStats();
   Status OpenCompactionOutputFile(SubcompactionState* sub_compact);
   void CleanupCompaction();

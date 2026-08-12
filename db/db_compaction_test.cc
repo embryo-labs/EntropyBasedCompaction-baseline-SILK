@@ -7,9 +7,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
+#include <atomic>
+#include <thread>
+
 #include "db/db_test_util.h"
-#include "port/stack_trace.h"
 #include "port/port.h"
+#include "port/stack_trace.h"
 #include "rocksdb/experimental.h"
 #include "rocksdb/utilities/convenience.h"
 #include "util/sync_point.h"
@@ -2669,6 +2672,103 @@ TEST_P(DBCompactionDirectIOTest, DirectIO) {
   ASSERT_EQ("0,0,1", FilesPerLevel(1));
   Destroy(options);
   delete options.env;
+}
+
+TEST_F(DBCompactionTest, ReleaseCompactionDuringManifestWrite) {
+  Options options = CurrentOptions();
+  options.compaction_style = kCompactionStyleLevel;
+  options.max_background_compactions = 3;
+  options.num_levels = 4;
+  env_->SetBackgroundThreads(3, Env::Priority::LOW);
+  DestroyAndReopen(options);
+
+  Random rnd(301);
+  ASSERT_OK(Put(Key(1), RandomString(&rnd, 20)));
+  ASSERT_OK(Flush());
+  MoveFilesToLevel(3);
+  ASSERT_OK(Put(Key(10), RandomString(&rnd, 20)));
+  ASSERT_OK(Flush());
+  MoveFilesToLevel(3);
+  ASSERT_OK(Put(Key(100), RandomString(&rnd, 20)));
+  ASSERT_OK(Flush());
+  MoveFilesToLevel(3);
+
+  ASSERT_OK(Put(Key(100), RandomString(&rnd, 20)));
+  ASSERT_OK(Put(Key(101), RandomString(&rnd, 20)));
+  ASSERT_OK(Flush());
+  MoveFilesToLevel(2);
+  ASSERT_OK(Put(Key(1), RandomString(&rnd, 20)));
+  ASSERT_OK(Put(Key(2), RandomString(&rnd, 20)));
+  ASSERT_OK(Flush());
+  MoveFilesToLevel(2);
+  ASSERT_OK(Put(Key(10), RandomString(&rnd, 20)));
+  ASSERT_OK(Put(Key(11), RandomString(&rnd, 20)));
+  ASSERT_OK(Flush());
+  MoveFilesToLevel(2);
+
+  ASSERT_EQ(0, NumTableFilesAtLevel(1));
+  ASSERT_EQ(3, NumTableFilesAtLevel(2));
+  ASSERT_EQ(3, NumTableFilesAtLevel(3));
+
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+  std::atomic<int> manifest_writer_count{0};
+  SyncPoint::GetInstance()->SetCallBack(
+      "VersionSet::LogAndApply:BeforeWriterWaiting", [&](void*) {
+        if (manifest_writer_count.fetch_add(1) == 2) {
+          TEST_SYNC_POINT("DBCompactionTest::AllManifestWritersReady");
+        }
+      });
+  SyncPoint::GetInstance()->LoadDependency(
+      {{"DBCompactionTest::AllManifestWritersReady",
+        "VersionSet::LogAndApply:WriteManifest"}});
+
+  std::atomic<int> completed_compaction_count{0};
+  SyncPoint::GetInstance()->SetCallBack(
+      "DBImpl::BackgroundCompaction:AfterCompaction", [&](void* ptr) {
+        if (completed_compaction_count.fetch_add(1) > 0) {
+          auto* cfd = static_cast<ColumnFamilyData*>(ptr);
+          ASSERT_TRUE(
+              cfd->compaction_picker()->compactions_in_progress()->empty());
+        }
+      });
+  SyncPoint::GetInstance()->EnableProcessing();
+
+  auto* cfd =
+      static_cast<ColumnFamilyHandleImpl*>(db_->DefaultColumnFamily())->cfd();
+  std::vector<std::thread> threads;
+  threads.emplace_back([&]() {
+    std::string begin_string = Key(1);
+    std::string end_string = Key(2);
+    Slice begin = begin_string;
+    Slice end = end_string;
+    ASSERT_OK(dbfull()->RunManualCompaction(
+        cfd, 2 /* input_level */, 3 /* output_level */, 0 /* output_path_id */,
+        &begin, &end, false /* exclusive */));
+  });
+  threads.emplace_back([&]() {
+    std::string begin_string = Key(10);
+    std::string end_string = Key(11);
+    Slice begin = begin_string;
+    Slice end = end_string;
+    ASSERT_OK(dbfull()->RunManualCompaction(
+        cfd, 2 /* input_level */, 3 /* output_level */, 0 /* output_path_id */,
+        &begin, &end, false /* exclusive */));
+  });
+
+  std::string begin_string = Key(100);
+  std::string end_string = Key(101);
+  Slice begin = begin_string;
+  Slice end = end_string;
+  ASSERT_OK(dbfull()->RunManualCompaction(
+      cfd, 2 /* input_level */, 3 /* output_level */, 0 /* output_path_id */,
+      &begin, &end, false /* exclusive */));
+
+  for (auto& thread : threads) {
+    thread.join();
+  }
+
+  SyncPoint::GetInstance()->DisableProcessing();
+  SyncPoint::GetInstance()->ClearAllCallBacks();
 }
 
 INSTANTIATE_TEST_CASE_P(DBCompactionDirectIOTest, DBCompactionDirectIOTest,

@@ -576,7 +576,8 @@ Status CompactionJob::Run() {
   return status;
 }
 
-Status CompactionJob::Install(const MutableCFOptions& mutable_cf_options) {
+Status CompactionJob::Install(const MutableCFOptions& mutable_cf_options,
+                              bool* compaction_released) {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_INSTALL);
   db_mutex_->AssertHeld();
@@ -586,7 +587,7 @@ Status CompactionJob::Install(const MutableCFOptions& mutable_cf_options) {
       compact_->compaction->output_level(), compaction_stats_);
 
   if (status.ok()) {
-    status = InstallCompactionResults(mutable_cf_options);
+    status = InstallCompactionResults(mutable_cf_options, compaction_released);
   }
   VersionStorageInfo::LevelSummaryStorage tmp;
   auto vstorage = cfd->current()->storage_info();
@@ -1182,7 +1183,7 @@ Status CompactionJob::FinishCompactionOutputFile(
 }
 
 Status CompactionJob::InstallCompactionResults(
-    const MutableCFOptions& mutable_cf_options) {
+    const MutableCFOptions& mutable_cf_options, bool* compaction_released) {
   db_mutex_->AssertHeld();
 
   auto* compaction = compact_->compaction;
@@ -1215,9 +1216,15 @@ Status CompactionJob::InstallCompactionResults(
       compaction->edit()->AddFile(compaction->output_level(), out.meta);
     }
   }
-  return versions_->LogAndApply(compaction->column_family_data(),
-                                mutable_cf_options, compaction->edit(),
-                                db_mutex_, db_directory_);
+  auto manifest_write_callback = [&compaction,
+                                  compaction_released](const Status& status) {
+    compaction->ReleaseCompactionFiles(status);
+    *compaction_released = true;
+  };
+  return versions_->LogAndApply(
+      compaction->column_family_data(), mutable_cf_options, compaction->edit(),
+      db_mutex_, db_directory_, false /* new_descriptor_log */,
+      nullptr /* column_family_options */, manifest_write_callback);
 }
 
 void CompactionJob::RecordCompactionIOStats() {

@@ -2294,10 +2294,16 @@ struct VersionSet::ManifestWriter {
   InstrumentedCondVar cv;
   ColumnFamilyData* cfd;
   const autovector<VersionEdit*>& edit_list;
+  const std::function<void(const Status&)> manifest_write_callback;
 
   explicit ManifestWriter(InstrumentedMutex* mu, ColumnFamilyData* _cfd,
-                          const autovector<VersionEdit*>& e)
-      : done(false), cv(mu), cfd(_cfd), edit_list(e) {}
+                          const autovector<VersionEdit*>& e,
+                          const std::function<void(const Status&)>& callback)
+      : done(false),
+        cv(mu),
+        cfd(_cfd),
+        edit_list(e),
+        manifest_write_callback(callback) {}
 };
 
 VersionSet::VersionSet(const std::string& dbname,
@@ -2368,12 +2374,13 @@ void VersionSet::AppendVersion(ColumnFamilyData* column_family_data,
   v->next_->prev_ = v;
 }
 
-Status VersionSet::LogAndApply(ColumnFamilyData* column_family_data,
-                               const MutableCFOptions& mutable_cf_options,
-                               const autovector<VersionEdit*>& edit_list,
-                               InstrumentedMutex* mu, Directory* db_directory,
-                               bool new_descriptor_log,
-                               const ColumnFamilyOptions* new_cf_options) {
+Status VersionSet::LogAndApply(
+    ColumnFamilyData* column_family_data,
+    const MutableCFOptions& mutable_cf_options,
+    const autovector<VersionEdit*>& edit_list, InstrumentedMutex* mu,
+    Directory* db_directory, bool new_descriptor_log,
+    const ColumnFamilyOptions* new_cf_options,
+    const std::function<void(const Status&)>& manifest_write_callback) {
   mu->AssertHeld();
   // num of edits
   auto num_edits = edit_list.size();
@@ -2397,8 +2404,10 @@ Status VersionSet::LogAndApply(ColumnFamilyData* column_family_data,
   }
 
   // queue our request
-  ManifestWriter w(mu, column_family_data, edit_list);
+  ManifestWriter w(mu, column_family_data, edit_list, manifest_write_callback);
   manifest_writers_.push_back(&w);
+  TEST_SYNC_POINT_CALLBACK("VersionSet::LogAndApply:BeforeWriterWaiting",
+                           nullptr);
   while (!w.done && &w != manifest_writers_.front()) {
     w.cv.Wait();
   }
@@ -2630,9 +2639,12 @@ Status VersionSet::LogAndApply(ColumnFamilyData* column_family_data,
   while (true) {
     ManifestWriter* ready = manifest_writers_.front();
     manifest_writers_.pop_front();
+    ready->status = s;
+    ready->done = true;
+    if (ready->manifest_write_callback) {
+      ready->manifest_write_callback(s);
+    }
     if (ready != &w) {
-      ready->status = s;
-      ready->done = true;
       ready->cv.Signal();
     }
     if (ready == last_writer) break;

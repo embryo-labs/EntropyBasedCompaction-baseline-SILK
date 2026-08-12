@@ -169,6 +169,7 @@ DBImpl::DBImpl(const DBOptions& options, const std::string& dbname)
       unscheduled_flushes_(0),
       unscheduled_compactions_(0),
       bg_compaction_scheduled_(0),
+      bg_high_pri_compaction_scheduled_(0),
       num_running_compactions_(0),
       bg_flush_scheduled_(0),
       num_running_flushes_(0),
@@ -262,6 +263,7 @@ DBImpl::~DBImpl() {
   mutex_.Lock();
   bg_compaction_scheduled_ -=
       compactions_unscheduled + high_pri_compactions_unscheduled;
+  bg_high_pri_compaction_scheduled_ -= high_pri_compactions_unscheduled;
   bg_flush_scheduled_ -= flushes_unscheduled;
 
   // Wait for background work to finish
