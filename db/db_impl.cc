@@ -169,7 +169,6 @@ DBImpl::DBImpl(const DBOptions& options, const std::string& dbname)
       unscheduled_flushes_(0),
       unscheduled_compactions_(0),
       bg_compaction_scheduled_(0),
-      bg_l0_compaction_scheduled_(0),
       num_running_compactions_(0),
       bg_flush_scheduled_(0),
       num_running_flushes_(0),
