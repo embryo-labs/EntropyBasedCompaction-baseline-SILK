@@ -197,13 +197,8 @@ Status ExternalSstFileIngestionJob::Run() {
     edit_.AddFile(f.picked_level, f.fd.GetNumber(), f.fd.GetPathId(),
                   f.fd.GetFileSize(), f.smallest_internal_key(),
                   f.largest_internal_key(), f.assigned_seqno, f.assigned_seqno,
-                  false,
-                  std::make_shared<HyperLogLog>(12),
-                  0 /*reclaim_ratio*/,
-                  100000000/*file_num_low*/,
-                  0/*file_num_high*/,
-                  0/*num_sst_next_level_overlap*/,
-                  0/*hll_add_count*/);
+                  false, std::make_shared<HyperLogLog>(12),
+                  0 /*hll_add_count*/);
   }
 
   if (consumed_seqno) {

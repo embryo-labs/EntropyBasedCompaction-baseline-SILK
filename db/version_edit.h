@@ -110,10 +110,6 @@ struct FileMetaData {
   bool marked_for_compaction;  // True if client asked us nicely to compact this
                                // file.
   shared_ptr<HyperLogLog> hll;
-  double reclaim_ratio;
-  uint64_t file_num_low;
-  uint64_t file_num_high;
-  int num_sst_next_level_overlap;
   int hll_add_count;
 
   FileMetaData()
@@ -130,10 +126,6 @@ struct FileMetaData {
         init_stats_from_file(false),
         marked_for_compaction(false),
         hll(std::make_shared<HyperLogLog>(12)),
-        reclaim_ratio(0.0),
-        file_num_low(-1),
-        file_num_high(-1),
-        num_sst_next_level_overlap(-1),
         hll_add_count(0) {}
 
   // REQUIRED: Keys must be given to the function in sorted order (it expects
@@ -224,14 +216,8 @@ class VersionEdit {
   void AddFile(int level, uint64_t file, uint32_t file_path_id,
                uint64_t file_size, const InternalKey& smallest,
                const InternalKey& largest, const SequenceNumber& smallest_seqno,
-               const SequenceNumber& largest_seqno,
-               bool marked_for_compaction,
-               const shared_ptr<HyperLogLog>& hll,
-               double reclaim_ratio,
-               uint64_t file_num_low,
-               uint64_t file_num_high,
-               int num_sst_next_level_overlap,
-               int hll_add_count) {
+               const SequenceNumber& largest_seqno, bool marked_for_compaction,
+               const shared_ptr<HyperLogLog>& hll, int hll_add_count) {
     assert(smallest_seqno <= largest_seqno);
     FileMetaData f;
     f.fd = FileDescriptor(file, file_path_id, file_size);
@@ -241,10 +227,6 @@ class VersionEdit {
     f.largest_seqno = largest_seqno;
     f.marked_for_compaction = marked_for_compaction;
     f.hll = hll;
-    f.reclaim_ratio = reclaim_ratio;
-    f.file_num_low = file_num_low;
-    f.file_num_high = file_num_high;
-    f.num_sst_next_level_overlap = num_sst_next_level_overlap;
     f.hll_add_count = hll_add_count;
     new_files_.emplace_back(level, std::move(f));
   }
