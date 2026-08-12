@@ -11,21 +11,20 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <deque>
 #include "port/port.h"
-#include "rocksdb/env.h"
-#include "rocksdb/rate_limiter.h"
 #include "util/mutexlock.h"
 #include "util/random.h"
+#include "rocksdb/env.h"
+#include "rocksdb/rate_limiter.h"
 
 namespace rocksdb {
 
 class GenericRateLimiter : public RateLimiter {
  public:
   GenericRateLimiter(int64_t refill_bytes, int64_t refill_period_us,
-                     int32_t fairness, RateLimiter::Mode mode, Env* env,
-                     bool auto_tuned);
+                     int32_t fairness,
+                     RateLimiter::Mode mode = RateLimiter::Mode::kWritesOnly);
 
   virtual ~GenericRateLimiter();
 
@@ -69,8 +68,6 @@ class GenericRateLimiter : public RateLimiter {
  private:
   void Refill();
   int64_t CalculateRefillBytesPerPeriod(int64_t rate_bytes_per_sec);
-  Status Tune();
-
   uint64_t NowMicrosMonotonic(Env* env) {
     return env->NowNanos() / std::milli::den;
   }
@@ -102,12 +99,6 @@ class GenericRateLimiter : public RateLimiter {
   struct Req;
   Req* leader_;
   std::deque<Req*> queue_[Env::IO_TOTAL];
-
-  bool auto_tuned_;
-  int64_t num_drains_;
-  int64_t prev_num_drains_;
-  const int64_t max_bytes_per_sec_;
-  std::chrono::microseconds tuned_time_;
 };
 
 }  // namespace rocksdb

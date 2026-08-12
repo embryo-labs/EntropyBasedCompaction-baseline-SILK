@@ -264,8 +264,6 @@ DEFINE_bool(reverse_iterator, false,
 
 DEFINE_bool(use_uint64_comparator, false, "use Uint64 user comparator");
 
-DEFINE_bool(autotuned_rate_limiter, false, "Are we using RocksDB autotuned rate limiter or not");
-
 DEFINE_bool(dynamic_compaction_rate, false, "dynamically adjust compaction and flushing rate; used in FluctuatingThroughput tests");
 
 DEFINE_int64(batch_size, 1, "Batch size");
@@ -3415,19 +3413,11 @@ void VerifyDBFromDB(std::string& truth_db_name) {
                 "new_table_reader_for_compaction_inputs set\n");
         exit(1);
       }
-      if (FLAGS_autotuned_rate_limiter == true){
-        options.rate_limiter.reset(NewGenericRateLimiter(
-          FLAGS_rate_limiter_bytes_per_sec, 100 * 1000 /* refill_period_us */,
-          10 /* fairness */,
-          FLAGS_rate_limit_bg_reads ? RateLimiter::Mode::kReadsOnly
-                                    : RateLimiter::Mode::kWritesOnly));
-      } else{ 
       options.rate_limiter.reset(NewGenericRateLimiter(
           FLAGS_rate_limiter_bytes_per_sec, 100 * 1000 /* refill_period_us */,
           10 /* fairness */,
           FLAGS_rate_limit_bg_reads ? RateLimiter::Mode::kReadsOnly
                                     : RateLimiter::Mode::kWritesOnly));
-      }
     }
 
 #ifndef ROCKSDB_LITE
