@@ -1382,9 +1382,7 @@ class ReporterAgent {
 
 enum OperationType : unsigned char {
   kRead = 0,
-  kReadDisk,
   kWrite,
-  kWriteLarge,
   kDelete,
   kSeek,
   kMerge,
@@ -1399,9 +1397,7 @@ enum OperationType : unsigned char {
 static std::unordered_map<OperationType, std::string, std::hash<unsigned char>>
                           OperationTypeString = {
   {kRead, "read"},
-  {kReadDisk, "readDisk"},
   {kWrite, "write"},
-  {kWriteLarge, "writeLarge"},
   {kDelete, "delete"},
   {kSeek, "seek"},
   {kMerge, "merge"},
