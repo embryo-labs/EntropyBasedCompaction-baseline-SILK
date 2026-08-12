@@ -18,4 +18,3 @@ db_impl.h
 db_impl_compaction_flush.cc
 thread_status_impl.cc
 
-

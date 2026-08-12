@@ -14,6 +14,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "rocksdb/comparator.h"
 #include "rocksdb/iterator.h"
@@ -22,11 +23,12 @@
 #include "rocksdb/write_batch.h"
 #include "rocksdb/write_batch_base.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class ColumnFamilyHandle;
 class Comparator;
 class DB;
+class ReadCallback;
 struct ReadOptions;
 struct DBOptions;
 
@@ -38,12 +40,13 @@ enum WriteType {
   kDeleteRangeRecord,
   kLogDataRecord,
   kXIDRecord,
+  kUnknownRecord,
 };
 
 // an entry for Put, Merge, Delete, or SingleDelete entry for write batches.
 // Used in WBWIIterator.
 struct WriteEntry {
-  WriteType type;
+  WriteType type = kUnknownRecord;
   Slice key;
   Slice value;
 };
@@ -98,6 +101,8 @@ class WriteBatchWithIndex : public WriteBatchBase {
       size_t max_bytes = 0);
 
   ~WriteBatchWithIndex() override;
+  WriteBatchWithIndex(WriteBatchWithIndex&&);
+  WriteBatchWithIndex& operator=(WriteBatchWithIndex&&);
 
   using WriteBatchBase::Put;
   Status Put(ColumnFamilyHandle* column_family, const Slice& key,
@@ -121,9 +126,17 @@ class WriteBatchWithIndex : public WriteBatchBase {
   Status SingleDelete(const Slice& key) override;
 
   using WriteBatchBase::DeleteRange;
-  Status DeleteRange(ColumnFamilyHandle* column_family, const Slice& begin_key,
-                     const Slice& end_key) override;
-  Status DeleteRange(const Slice& begin_key, const Slice& end_key) override;
+  Status DeleteRange(ColumnFamilyHandle* /* column_family */,
+                     const Slice& /* begin_key */,
+                     const Slice& /* end_key */) override {
+    return Status::NotSupported(
+        "DeleteRange unsupported in WriteBatchWithIndex");
+  }
+  Status DeleteRange(const Slice& /* begin_key */,
+                     const Slice& /* end_key */) override {
+    return Status::NotSupported(
+        "DeleteRange unsupported in WriteBatchWithIndex");
+  }
 
   using WriteBatchBase::PutLogData;
   Status PutLogData(const Slice& blob) override;
@@ -154,8 +167,15 @@ class WriteBatchWithIndex : public WriteBatchBase {
   // The returned iterator should be deleted by the caller.
   // The base_iterator is now 'owned' by the returned iterator. Deleting the
   // returned iterator will also delete the base_iterator.
+  //
+  // Updating write batch with the current key of the iterator is not safe.
+  // We strongly recommend users not to do it. It will invalidate the current
+  // key() and value() of the iterator. This invalidation happens even before
+  // the write batch update finishes. The state may recover after Next() is
+  // called.
   Iterator* NewIteratorWithBase(ColumnFamilyHandle* column_family,
-                                Iterator* base_iterator);
+                                Iterator* base_iterator,
+                                const ReadOptions* opts = nullptr);
   // default column family
   Iterator* NewIteratorWithBase(Iterator* base_iterator);
 
@@ -186,9 +206,25 @@ class WriteBatchWithIndex : public WriteBatchBase {
   // regardless).
   Status GetFromBatchAndDB(DB* db, const ReadOptions& read_options,
                            const Slice& key, std::string* value);
+
+  // An overload of the above method that receives a PinnableSlice
+  Status GetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+                           const Slice& key, PinnableSlice* value);
+
   Status GetFromBatchAndDB(DB* db, const ReadOptions& read_options,
                            ColumnFamilyHandle* column_family, const Slice& key,
                            std::string* value);
+
+  // An overload of the above method that receives a PinnableSlice
+  Status GetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+                           ColumnFamilyHandle* column_family, const Slice& key,
+                           PinnableSlice* value);
+
+  void MultiGetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+                              ColumnFamilyHandle* column_family,
+                              const size_t num_keys, const Slice* keys,
+                              PinnableSlice* values, Status* statuses,
+                              bool sorted_input);
 
   // Records the state of the batch for future calls to RollbackToSavePoint().
   // May be called multiple times to set multiple save points.
@@ -214,12 +250,30 @@ class WriteBatchWithIndex : public WriteBatchBase {
   Status PopSavePoint() override;
 
   void SetMaxBytes(size_t max_bytes) override;
+  size_t GetDataSize() const;
 
  private:
+  friend class PessimisticTransactionDB;
+  friend class WritePreparedTxn;
+  friend class WriteUnpreparedTxn;
+  friend class WriteBatchWithIndex_SubBatchCnt_Test;
+  // Returns the number of sub-batches inside the write batch. A sub-batch
+  // starts right before inserting a key that is a duplicate of a key in the
+  // last sub-batch.
+  size_t SubBatchCnt();
+
+  Status GetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+                           ColumnFamilyHandle* column_family, const Slice& key,
+                           PinnableSlice* value, ReadCallback* callback);
+  void MultiGetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+                              ColumnFamilyHandle* column_family,
+                              const size_t num_keys, const Slice* keys,
+                              PinnableSlice* values, Status* statuses,
+                              bool sorted_input, ReadCallback* callback);
   struct Rep;
   std::unique_ptr<Rep> rep;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 #endif  // !ROCKSDB_LITE

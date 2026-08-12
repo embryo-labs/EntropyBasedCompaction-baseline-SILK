@@ -13,7 +13,7 @@
 #include "utilities/persistent_cache/hash_table.h"
 #include "utilities/persistent_cache/lrulist.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 // Evictable Hash Table
 //
@@ -88,7 +88,7 @@ class EvictableHashTable : private HashTable<T*, Hash, Equal> {
 
       WriteLock _(&hash_table::locks_[idx]);
       LRUListType& lru = lru_lists_[idx];
-      if (!lru.IsEmpty() && (t = lru.Pop())) {
+      if (!lru.IsEmpty() && (t = lru.Pop()) != nullptr) {
         assert(!t->refs_);
         // We got an item to evict, erase from the bucket
         const uint64_t h = Hash()(t);
@@ -163,6 +163,6 @@ class EvictableHashTable : private HashTable<T*, Hash, Equal> {
   std::unique_ptr<LRUListType[]> lru_lists_;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 #endif

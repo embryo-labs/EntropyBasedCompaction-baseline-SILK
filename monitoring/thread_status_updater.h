@@ -41,7 +41,7 @@
 #include "port/port.h"
 #include "util/thread_operation.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class ColumnFamilyHandle;
 
@@ -218,8 +218,7 @@ class ThreadStatusUpdater {
   // globally instead of inside DB is to avoid the situation where DB is
   // closing while GetThreadList function already get the pointer to its
   // CopnstantColumnFamilyInfo.
-  std::unordered_map<
-      const void*, std::unique_ptr<ConstantColumnFamilyInfo>> cf_info_map_;
+  std::unordered_map<const void*, ConstantColumnFamilyInfo> cf_info_map_;
 
   // A db_key to cf_key map that allows erasing elements in cf_info_map
   // associated to the same db_key faster.
@@ -231,4 +230,4 @@ class ThreadStatusUpdater {
 #endif  // ROCKSDB_USING_THREAD_STATUS
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
