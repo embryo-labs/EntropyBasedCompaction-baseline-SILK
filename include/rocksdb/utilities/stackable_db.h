@@ -225,6 +225,11 @@ class StackableDB : public DB {
     return db_->ContinueCompactionWork();
   }
 
+  virtual Status WaitForCompact(
+      const WaitForCompactOptions& wait_for_compact_options) override {
+    return db_->WaitForCompact(wait_for_compact_options);
+  }
+
   virtual Status EnableAutoCompaction(
       const std::vector<ColumnFamilyHandle*>& column_family_handles) override {
     return db_->EnableAutoCompaction(column_family_handles);

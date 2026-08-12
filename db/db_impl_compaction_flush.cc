@@ -613,6 +613,26 @@ Status DBImpl::CompactFilesImpl(
 }
 #endif  // ROCKSDB_LITE
 
+Status DBImpl::WaitForCompact(
+    const WaitForCompactOptions& wait_for_compact_options) {
+  InstrumentedMutexLock l(&mutex_);
+  for (;;) {
+    if (shutting_down_.load(std::memory_order_acquire)) {
+      return Status::ShutdownInProgress();
+    }
+    if (bg_work_paused_ && wait_for_compact_options.abort_on_pause) {
+      return Status::Aborted();
+    }
+    if ((bg_compaction_scheduled_ || bg_flush_scheduled_ ||
+         unscheduled_compactions_ || unscheduled_flushes_) &&
+        bg_error_.ok()) {
+      bg_cv_.Wait();
+    } else {
+      return bg_error_;
+    }
+  }
+}
+
 Status DBImpl::PauseBackgroundWork() {
   InstrumentedMutexLock guard_lock(&mutex_);
   bg_compaction_paused_++;

@@ -7154,20 +7154,14 @@ void ReadRandomWriteRandomSplitRangeDifferentValueSizes(ThreadState* thread) {
     fprintf(stdout, "waitforcompaction(%s): started\n",
             db.db->GetName().c_str());
 
-    std::string num_running;
-    std::string pending_bytes;
-    for (;;) {
-      db.db->GetProperty("rocksdb.num-running-compactions", &num_running);
-      db.db->GetProperty("rocksdb.estimate-pending-compaction-bytes",
-                         &pending_bytes);
-      if (num_running == "0" && pending_bytes == "0") {
-        break;
-      }
-      FLAGS_env->SleepForMicroseconds(1000000);
+    Status s = db.db->WaitForCompact(WaitForCompactOptions());
+    if (!s.ok()) {
+      fprintf(stderr, "waitforcompaction(%s): failed with status (%s)\n",
+              db.db->GetName().c_str(), s.ToString().c_str());
     }
 
-    fprintf(stdout, "waitforcompaction(%s): finished (%s)\n",
-            db.db->GetName().c_str(), num_running.c_str());
+    fprintf(stdout, "waitforcompaction(%s): finished with status (%s)\n",
+            db.db->GetName().c_str(), s.ToString().c_str());
   }
 
   void WaitForCompaction() {
