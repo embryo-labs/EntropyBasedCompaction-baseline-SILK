@@ -208,8 +208,6 @@ DEFINE_string(
     "\theapprofile -- Dump a heap profile (if supported by this"
     " port)\n");
 
-DEFINE_int64(prob, 9900, " the threshold for the prob variable");
-
 DEFINE_int64(num, 1000000, "Number of key/values to place in database");
 
 DEFINE_int64(numdistinct, 1000,
@@ -6784,8 +6782,6 @@ int db_bench_tool(int argc, char** argv) {
     // at which the timer is checked for FLAGS_stats_interval_seconds
     FLAGS_stats_interval = 1000;
   }
-
-  printf("HLL-%d", FLAGS_prob);
 
   rocksdb::Benchmark benchmark;
   // Initialize the zipf distribution for YCSB
