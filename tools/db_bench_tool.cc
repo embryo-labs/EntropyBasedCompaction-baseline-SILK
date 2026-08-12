@@ -2016,7 +2016,6 @@ class Benchmark {
   int64_t range_tombstone_width_;
   int64_t max_num_range_tombstones_;
   WriteOptions write_options_;
-  ColumnFamilyOptions col_fam_options_;
   Options open_options_;  // keep options around to properly destroy db later
   int64_t reads_;
   int64_t deletes_;
@@ -2479,10 +2478,6 @@ void VerifyDBFromDB(std::string& truth_db_name) {
       range_tombstone_width_ = FLAGS_range_tombstone_width;
       max_num_range_tombstones_ = FLAGS_max_num_range_tombstones;
       write_options_ = WriteOptions();
-      
-      col_fam_options_ = ColumnFamilyOptions();
-      col_fam_options_.inplace_update_support = true;
-
       read_random_exp_range_ = FLAGS_read_random_exp_range;
       if (FLAGS_sync) {
         write_options_.sync = true;
