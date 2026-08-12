@@ -173,6 +173,9 @@ class DBImpl : public DB {
   virtual Status PauseCompactionWork() override;
   virtual Status ContinueCompactionWork() override;
 
+  Status WaitForCompact(
+      const WaitForCompactOptions &wait_for_compact_options) override;
+
   virtual Status EnableAutoCompaction(
       const std::vector<ColumnFamilyHandle*>& column_family_handles) override;
 
@@ -349,7 +352,7 @@ class DBImpl : public DB {
   // Wait for memtable compaction
   Status TEST_WaitForFlushMemTable(ColumnFamilyHandle* column_family = nullptr);
 
-  // Wait for any compaction
+  // Wait for all scheduled and queued flush and compaction jobs.
   Status TEST_WaitForCompact();
 
   // Return the maximum overlapping data (in bytes) at next level for any

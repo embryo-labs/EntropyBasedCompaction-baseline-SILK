@@ -48,6 +48,7 @@ struct WriteOptions;
 struct FlushOptions;
 struct CompactionOptions;
 struct CompactRangeOptions;
+struct WaitForCompactOptions;
 struct TableProperties;
 struct ExternalSstFileInfo;
 class WriteBatch;
@@ -802,6 +803,11 @@ class DB {
   virtual Status PauseCompactionWork() = 0;
   virtual Status ContinueCompactionWork() = 0;
 
+  // Wait for all scheduled and queued flush and compaction jobs to finish. If
+  // writes continue scheduling background work, this may not return. If the DB
+  // is shutting down, returns Status::ShutdownInProgress.
+  virtual Status
+  WaitForCompact(const WaitForCompactOptions &wait_for_compact_options) = 0;
 
   // This function will enable automatic compactions for the given column
   // families if they were previously disabled. The function will first set the

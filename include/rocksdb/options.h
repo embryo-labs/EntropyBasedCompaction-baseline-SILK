@@ -1168,6 +1168,12 @@ struct CompactRangeOptions {
       BottommostLevelCompaction::kIfHaveCompactionFilter;
 };
 
+struct WaitForCompactOptions {
+  // Return Status::Aborted when background work is paused. Otherwise, wait
+  // until ContinueBackgroundWork() resumes queued work.
+  bool abort_on_pause = false;
+};
+
 // IngestExternalFileOptions is used by IngestExternalFile()
 struct IngestExternalFileOptions {
   // Can be set to true to move the files instead of copying them.
