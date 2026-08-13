@@ -110,10 +110,9 @@ class FlushedFileCollector : public EventListener {
 };
 
 class CompactionStatsCollector : public EventListener {
- public:
+public:
   CompactionStatsCollector()
-      : compaction_completed_(
-            static_cast<int>(CompactionReason::kNumOfReasons)) {
+      : compaction_completed_(static_cast<int>(CompactionReason::kNumOfReasons)) {
     for (auto& v : compaction_completed_) {
       v.store(0);
     }
@@ -147,7 +146,7 @@ class CompactionStatsCollector : public EventListener {
     return compaction_completed_.at(k).load();
   }
 
- private:
+private:
   std::vector<std::atomic<int>> compaction_completed_;
 };
 
@@ -255,7 +254,7 @@ void VerifyCompactionResult(
  * 2) stat.counts[i] == collector.NumberOfCompactions(i)
  */
 void VerifyCompactionStats(ColumnFamilyData& cfd,
-                           const CompactionStatsCollector& collector) {
+    const CompactionStatsCollector& collector) {
 #ifndef NDEBUG
   InternalStats* internal_stats_ptr = cfd.internal_stats();
   ASSERT_NE(internal_stats_ptr, nullptr);
@@ -276,8 +275,7 @@ void VerifyCompactionStats(ColumnFamilyData& cfd,
   // Verify InternalStats bookkeeping matches that of CompactionStatsCollector,
   // assuming that all compactions complete.
   for (int i = 0; i < num_of_reasons; i++) {
-    ASSERT_EQ(collector.NumberOfCompactions(static_cast<CompactionReason>(i)),
-              counts[i]);
+    ASSERT_EQ(collector.NumberOfCompactions(static_cast<CompactionReason>(i)), counts[i]);
   }
 #endif /* NDEBUG */
 }
@@ -380,7 +378,7 @@ TEST_P(DBCompactionTestWithParam, CompactionsPreserveDeletes) {
   for (int tid = 0; tid < 3; ++tid) {
     Options options = DeletionTriggerOptions(CurrentOptions());
     options.max_subcompactions = max_subcompactions_;
-    options.preserve_deletes = true;
+    options.preserve_deletes=true;
     options.num_levels = 2;
 
     if (tid == 1) {
@@ -428,7 +426,7 @@ TEST_P(DBCompactionTestWithParam, CompactionsPreserveDeletes) {
 
     // check that iterator that sees internal keys sees tombstones
     ReadOptions ro;
-    ro.iter_start_seqnum = 1;
+    ro.iter_start_seqnum=1;
     db_iter = dbfull()->NewIterator(ro);
     ASSERT_OK(db_iter->status());
     i = 0;
@@ -1890,7 +1888,7 @@ TEST_F(DBCompactionTest, DeleteFilesInRanges) {
   ASSERT_EQ("0,0,10", FilesPerLevel(0));
 
   // file [0 => 100), [200 => 300), ... [800, 900)
-  for (auto i = 0; i < 10; i += 2) {
+  for (auto i = 0; i < 10; i+=2) {
     for (auto j = 0; j < 100; j++) {
       auto k = i * 100 + j;
       ASSERT_OK(Put(Key(k), values[k]));
@@ -2315,7 +2313,7 @@ TEST_P(DBCompactionTestWithParam, LevelCompactionCFPathUse) {
   options.db_paths.emplace_back(dbname_ + "_2", 4 * 1024 * 1024);
   options.db_paths.emplace_back(dbname_ + "_3", 1024 * 1024 * 1024);
   options.memtable_factory.reset(
-      new SpecialSkipListFactory(KNumKeysByGenerateNewFile - 1));
+    new SpecialSkipListFactory(KNumKeysByGenerateNewFile - 1));
   options.compaction_style = kCompactionStyleLevel;
   options.write_buffer_size = 110 << 10;  // 110KB
   options.arena_block_size = 4 << 10;
@@ -2332,14 +2330,14 @@ TEST_P(DBCompactionTestWithParam, LevelCompactionCFPathUse) {
   cf_opt1.cf_paths.emplace_back(dbname_ + "cf1_2", 4 * 1024 * 1024);
   cf_opt1.cf_paths.emplace_back(dbname_ + "cf1_3", 1024 * 1024 * 1024);
   option_vector.emplace_back(DBOptions(options), cf_opt1);
-  CreateColumnFamilies({"one"}, option_vector[1]);
+  CreateColumnFamilies({"one"},option_vector[1]);
 
   // Configura CF2 specific paths.
   cf_opt2.cf_paths.emplace_back(dbname_ + "cf2", 500 * 1024);
   cf_opt2.cf_paths.emplace_back(dbname_ + "cf2_2", 4 * 1024 * 1024);
   cf_opt2.cf_paths.emplace_back(dbname_ + "cf2_3", 1024 * 1024 * 1024);
   option_vector.emplace_back(DBOptions(options), cf_opt2);
-  CreateColumnFamilies({"two"}, option_vector[2]);
+  CreateColumnFamilies({"two"},option_vector[2]);
 
   ReopenWithColumnFamilies({"default", "one", "two"}, option_vector);
 
@@ -3573,8 +3571,9 @@ TEST_F(DBCompactionTest, CompactFilesPendingL0Bug) {
   ASSERT_EQ(kNumL0Files, cf_meta.levels[0].files.size());
   std::vector<std::string> input_filenames;
   input_filenames.push_back(cf_meta.levels[0].files.front().name);
-  ASSERT_OK(dbfull()->CompactFiles(CompactionOptions(), input_filenames,
-                                   0 /* output_level */));
+  ASSERT_OK(dbfull()
+                  ->CompactFiles(CompactionOptions(), input_filenames,
+                                 0 /* output_level */));
   TEST_SYNC_POINT("DBCompactionTest::CompactFilesPendingL0Bug:ManualCompacted");
   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
 }
@@ -4221,9 +4220,9 @@ TEST_F(DBCompactionTest, LevelPeriodicAndTtlCompaction) {
   const int kValueSize = 100;
 
   Options options = CurrentOptions();
-  options.ttl = 10 * 60 * 60;                          // 10 hours
+  options.ttl = 10 * 60 * 60;  // 10 hours
   options.periodic_compaction_seconds = 48 * 60 * 60;  // 2 days
-  options.max_open_files = -1;  // needed for both periodic and ttl compactions
+  options.max_open_files = -1;   // needed for both periodic and ttl compactions
   env_->SetMockSleep();
   options.env = env_;
 
@@ -4577,7 +4576,7 @@ TEST_F(DBCompactionTest, CompactRangeSkipFlushAfterDelay) {
        {"DBImpl::FlushMemTable:StallWaitDone", "CompactionJob::Run():End"}});
   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
 
-  // used for the delayable flushes
+  //used for the delayable flushes
   FlushOptions flush_opts;
   flush_opts.allow_write_stall = true;
   for (int i = 0; i < kNumL0FilesLimit - 1; ++i) {
@@ -4596,8 +4595,7 @@ TEST_F(DBCompactionTest, CompactRangeSkipFlushAfterDelay) {
   ASSERT_OK(Put(ToString(0), rnd.RandomString(1024)));
   ASSERT_OK(dbfull()->Flush(flush_opts));
   ASSERT_OK(Put(ToString(0), rnd.RandomString(1024)));
-  TEST_SYNC_POINT(
-      "DBCompactionTest::CompactRangeSkipFlushAfterDelay:PostFlush");
+  TEST_SYNC_POINT("DBCompactionTest::CompactRangeSkipFlushAfterDelay:PostFlush");
   manual_compaction_thread.join();
 
   // If CompactRange's flush was skipped, the final Put above will still be
@@ -4798,10 +4796,10 @@ TEST_F(DBCompactionTest, CompactionLimiter) {
   }
 
   std::shared_ptr<ConcurrentTaskLimiter> unique_limiter(
-      NewConcurrentTaskLimiter("unique_limiter", -1));
+    NewConcurrentTaskLimiter("unique_limiter", -1));
 
-  const char* cf_names[] = {"default", "0", "1", "2", "3", "4", "5", "6", "7",
-                            "8",       "9", "a", "b", "c", "d", "e", "f"};
+  const char* cf_names[] = {"default", "0", "1", "2", "3", "4", "5",
+    "6", "7", "8", "9", "a", "b", "c", "d", "e", "f" };
   const unsigned int cf_count = sizeof cf_names / sizeof cf_names[0];
 
   std::unordered_map<std::string, CompactionLimiter*> cf_to_limiter;
@@ -4813,9 +4811,9 @@ TEST_F(DBCompactionTest, CompactionLimiter) {
   options.level0_file_num_compaction_trigger = 4;
   options.level0_slowdown_writes_trigger = 64;
   options.level0_stop_writes_trigger = 64;
-  options.max_background_jobs = kMaxBackgroundThreads;  // Enough threads
+  options.max_background_jobs = kMaxBackgroundThreads; // Enough threads
   options.memtable_factory.reset(new SpecialSkipListFactory(kNumKeysPerFile));
-  options.max_write_buffer_number = 10;  // Enough memtables
+  options.max_write_buffer_number = 10; // Enough memtables
   DestroyAndReopen(options);
 
   std::vector<Options> option_vector;
@@ -4843,8 +4841,9 @@ TEST_F(DBCompactionTest, CompactionLimiter) {
     CreateColumnFamilies({cf_names[cf]}, option_vector[cf]);
   }
 
-  ReopenWithColumnFamilies(
-      std::vector<std::string>(cf_names, cf_names + cf_count), option_vector);
+  ReopenWithColumnFamilies(std::vector<std::string>(cf_names,
+                                                    cf_names + cf_count),
+                           option_vector);
 
   port::Mutex mutex;
 
@@ -4906,7 +4905,7 @@ TEST_F(DBCompactionTest, CompactionLimiter) {
   // Enough L0 files to trigger compaction
   for (unsigned int cf = 0; cf < cf_count; cf++) {
     ASSERT_EQ(NumTableFilesAtLevel(0, cf),
-              options.level0_file_num_compaction_trigger);
+      options.level0_file_num_compaction_trigger);
   }
 
   // Create more files for one column family, which triggers speed up
@@ -4949,7 +4948,7 @@ TEST_F(DBCompactionTest, CompactionLimiter) {
 
   // flush one more file to cf 1
   for (int i = 0; i < kNumKeysPerFile; i++) {
-    ASSERT_OK(Put(cf_test, Key(keyIndex++), ""));
+      ASSERT_OK(Put(cf_test, Key(keyIndex++), ""));
   }
   // put extra key to trigger flush
   ASSERT_OK(Put(cf_test, "", ""));
@@ -4984,7 +4983,9 @@ TEST_P(DBCompactionDirectIOTest, DirectIO) {
       });
   if (options.use_direct_io_for_flush_and_compaction) {
     SyncPoint::GetInstance()->SetCallBack(
-        "SanitizeOptions:direct_io", [&](void* /*arg*/) { readahead = true; });
+        "SanitizeOptions:direct_io", [&](void* /*arg*/) {
+          readahead = true;
+        });
   }
   SyncPoint::GetInstance()->EnableProcessing();
   CreateAndReopenWithCF({"pikachu"}, options);
@@ -6840,8 +6841,8 @@ int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 #else
-  (void)argc;
-  (void)argv;
+  (void) argc;
+  (void) argv;
   return 0;
 #endif
 }

@@ -63,6 +63,7 @@
 
 #include <cinttypes>
 #include <memory>
+
 #include "db/builder.h"
 #include "db/db_impl/db_impl.h"
 #include "db/dbformat.h"
@@ -620,10 +621,10 @@ class Repairer {
             table->meta.fd.GetFileSize(), table->meta.smallest,
             table->meta.largest, table->meta.fd.smallest_seqno,
             table->meta.fd.largest_seqno, table->meta.marked_for_compaction,
-             table->meta.oldest_blob_file_number,
-             table->meta.oldest_ancester_time, table->meta.file_creation_time,
-             table->meta.file_checksum, table->meta.file_checksum_func_name,
-             std::make_shared<HyperLogLog>(12), 0 /* hll_add_count */);
+            table->meta.oldest_blob_file_number,
+            table->meta.oldest_ancester_time, table->meta.file_creation_time,
+            table->meta.file_checksum, table->meta.file_checksum_func_name,
+            std::make_shared<HyperLogLog>(12), 0 /* hll_add_count */);
       }
       assert(next_file_number_ > 0);
       vset_.MarkFileNumberUsed(next_file_number_ - 1);

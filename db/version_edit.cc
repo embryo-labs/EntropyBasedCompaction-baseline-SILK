@@ -20,7 +20,9 @@
 
 namespace ROCKSDB_NAMESPACE {
 
-namespace {}  // anonymous namespace
+namespace {
+
+}  // anonymous namespace
 
 uint64_t PackFileNumberAndPathId(uint64_t number, uint64_t path_id) {
   assert(number <= kFileNumberMask);

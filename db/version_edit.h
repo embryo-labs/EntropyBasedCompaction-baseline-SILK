@@ -294,7 +294,11 @@ struct FdWithKeyRange {
   Slice largest_key;     // slice that contain largest key
 
   FdWithKeyRange()
-      : fd(), file_metadata(nullptr), smallest_key(), largest_key() {}
+      : fd(),
+        file_metadata(nullptr),
+        smallest_key(),
+        largest_key() {
+  }
 
   FdWithKeyRange(FileDescriptor _fd, Slice _smallest_key, Slice _largest_key,
                  FileMetaData* _file_metadata)
@@ -405,12 +409,12 @@ class VersionEdit {
                int hll_add_count = 0) {
     assert(smallest_seqno <= largest_seqno);
     new_files_.emplace_back(
-        level,
-        FileMetaData(file, file_path_id, file_size, smallest, largest,
-                     smallest_seqno, largest_seqno, marked_for_compaction,
-                     oldest_blob_file_number, oldest_ancester_time,
-                     file_creation_time, file_checksum, file_checksum_func_name,
-                     hll, hll_add_count));
+        level, FileMetaData(file, file_path_id, file_size, smallest, largest,
+                            smallest_seqno, largest_seqno,
+                            marked_for_compaction, oldest_blob_file_number,
+                            oldest_ancester_time, file_creation_time,
+                            file_checksum, file_checksum_func_name, hll,
+                            hll_add_count));
   }
 
   void AddFile(int level, const FileMetaData& f) {

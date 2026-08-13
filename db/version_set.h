@@ -665,8 +665,8 @@ class Version {
 
   Status OverlapWithLevelIterator(const ReadOptions&, const FileOptions&,
                                   const Slice& smallest_user_key,
-                                  const Slice& largest_user_key, int level,
-                                  bool* overlap);
+                                  const Slice& largest_user_key,
+                                  int level, bool* overlap);
 
   // Lookup the value for key or get all merge operands for key.
   // If do_merge = true (default) then lookup value for key.
@@ -864,7 +864,7 @@ class Version {
 
 struct ObsoleteFileInfo {
   FileMetaData* metadata;
-  std::string path;
+  std::string   path;
 
   ObsoleteFileInfo() noexcept : metadata(nullptr) {}
   ObsoleteFileInfo(FileMetaData* f, const std::string& file_path)
@@ -873,8 +873,9 @@ struct ObsoleteFileInfo {
   ObsoleteFileInfo(const ObsoleteFileInfo&) = delete;
   ObsoleteFileInfo& operator=(const ObsoleteFileInfo&) = delete;
 
-  ObsoleteFileInfo(ObsoleteFileInfo&& rhs) noexcept : ObsoleteFileInfo() {
-    *this = std::move(rhs);
+  ObsoleteFileInfo(ObsoleteFileInfo&& rhs) noexcept :
+    ObsoleteFileInfo() {
+      *this = std::move(rhs);
   }
 
   ObsoleteFileInfo& operator=(ObsoleteFileInfo&& rhs) noexcept {

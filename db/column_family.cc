@@ -190,7 +190,8 @@ Status CheckCFPathsSupported(const DBOptions& db_options,
       return Status::NotSupported(
           "More than one CF paths are only supported in "
           "universal and level compaction styles. ");
-    } else if (cf_options.cf_paths.empty() && db_options.db_paths.size() > 1) {
+    } else if (cf_options.cf_paths.empty() &&
+               db_options.db_paths.size() > 1) {
       return Status::NotSupported(
           "More than one DB paths are only supported in "
           "universal and level compaction styles. ");
@@ -335,8 +336,7 @@ ColumnFamilyOptions SanitizeOptions(const ImmutableDBOptions& db_options,
   // were not deleted yet, when we open the DB we will find these .trash files
   // and schedule them to be deleted (or delete immediately if SstFileManager
   // was not used)
-  auto sfm =
-      static_cast<SstFileManagerImpl*>(db_options.sst_file_manager.get());
+  auto sfm = static_cast<SstFileManagerImpl*>(db_options.sst_file_manager.get());
   for (size_t i = 0; i < result.cf_paths.size(); i++) {
     DeleteScheduler::CleanupDirectory(db_options.env, sfm,
                                       result.cf_paths[i].path)
@@ -874,7 +874,7 @@ ColumnFamilyData::GetWriteStallConditionAndCause(
 }
 
 WriteStallCondition ColumnFamilyData::RecalculateWriteStallConditions(
-    const MutableCFOptions& mutable_cf_options) {
+      const MutableCFOptions& mutable_cf_options) {
   auto write_stall_condition = WriteStallCondition::kNormal;
   if (current_ != nullptr) {
     auto* vstorage = current_->storage_info();
@@ -1270,8 +1270,8 @@ bool ColumnFamilyData::ReturnThreadLocalSuperVersion(SuperVersion* sv) {
   return false;
 }
 
-void ColumnFamilyData::InstallSuperVersion(SuperVersionContext* sv_context,
-                                           InstrumentedMutex* db_mutex) {
+void ColumnFamilyData::InstallSuperVersion(
+    SuperVersionContext* sv_context, InstrumentedMutex* db_mutex) {
   db_mutex->AssertHeld();
   return InstallSuperVersion(sv_context, db_mutex, mutable_cf_options_);
 }
@@ -1425,8 +1425,8 @@ Env::WriteLifeTimeHint ColumnFamilyData::CalculateSSTWriteHint(int level) {
     // than base_level.
     return Env::WLTH_MEDIUM;
   }
-  return static_cast<Env::WriteLifeTimeHint>(
-      level - base_level + static_cast<int>(Env::WLTH_MEDIUM));
+  return static_cast<Env::WriteLifeTimeHint>(level - base_level +
+                            static_cast<int>(Env::WLTH_MEDIUM));
 }
 
 Status ColumnFamilyData::AddDirectories(

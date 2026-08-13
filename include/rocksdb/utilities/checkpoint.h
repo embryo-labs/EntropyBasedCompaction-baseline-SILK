@@ -6,7 +6,6 @@
 // A checkpoint is an openable snapshot of a database at a point in time.
 
 #pragma once
-
 #ifndef ROCKSDB_LITE
 
 #include <cstdint>

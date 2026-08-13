@@ -76,14 +76,16 @@ int FindFileInRange(const InternalKeyComparator& icmp,
   auto cmp = [&](const FdWithKeyRange& f, const Slice& k) -> bool {
     return icmp.InternalKeyComparator::Compare(f.largest_key, k) < 0;
   };
-  const auto& b = file_level.files;
-  return static_cast<int>(std::lower_bound(b + left, b + right, key, cmp) - b);
+  const auto &b = file_level.files;
+  return static_cast<int>(std::lower_bound(b + left,
+                                           b + right, key, cmp) - b);
 }
 
 Status OverlapWithIterator(const Comparator* ucmp,
-                           const Slice& smallest_user_key,
-                           const Slice& largest_user_key,
-                           InternalIterator* iter, bool* overlap) {
+    const Slice& smallest_user_key,
+    const Slice& largest_user_key,
+    InternalIterator* iter,
+    bool* overlap) {
   InternalKey range_start(smallest_user_key, kMaxSequenceNumber,
                           kValueTypeForSeek);
   iter->Seek(range_start.Encode());
@@ -616,10 +618,8 @@ class FilePickerMultiGet {
     unsigned int start_index_in_curr_level;
 
     FilePickerContext(int32_t left, int32_t right)
-        : search_left_bound(left),
-          search_right_bound(right),
-          curr_index_in_curr_level(0),
-          start_index_in_curr_level(0) {}
+        : search_left_bound(left), search_right_bound(right),
+          curr_index_in_curr_level(0), start_index_in_curr_level(0) {}
 
     FilePickerContext() = default;
   };
@@ -938,7 +938,9 @@ class LevelIterator final : public InternalIterator {
     return file_iter_.iter() ? file_iter_.status() : Status::OK();
   }
 
-  bool PrepareValue() override { return file_iter_.PrepareValue(); }
+  bool PrepareValue() override {
+    return file_iter_.PrepareValue();
+  }
 
   inline bool MayBeOutOfLowerBound() override {
     assert(Valid());
@@ -1276,8 +1278,9 @@ Status Version::GetTableProperties(std::shared_ptr<const TableProperties>* tp,
   if (fname != nullptr) {
     file_name = *fname;
   } else {
-    file_name = TableFileName(ioptions->cf_paths, file_meta->fd.GetNumber(),
-                              file_meta->fd.GetPathId());
+    file_name =
+      TableFileName(ioptions->cf_paths, file_meta->fd.GetNumber(),
+                    file_meta->fd.GetPathId());
   }
   s = ioptions->fs->NewRandomAccessFile(file_name, file_options_, &file,
                                         nullptr);
@@ -1404,8 +1407,8 @@ Status Version::GetPropertiesOfTablesInRange(
                                          false);
       for (const auto& file_meta : files) {
         auto fname =
-            TableFileName(cfd_->ioptions()->cf_paths, file_meta->fd.GetNumber(),
-                          file_meta->fd.GetPathId());
+            TableFileName(cfd_->ioptions()->cf_paths,
+                          file_meta->fd.GetNumber(), file_meta->fd.GetPathId());
         if (props->count(fname) == 0) {
           // 1. If the table is already present in table cache, load table
           // properties from there.
@@ -1594,7 +1597,8 @@ void Version::AddIterators(const ReadOptions& read_options,
 void Version::AddIteratorsForLevel(const ReadOptions& read_options,
                                    const FileOptions& soptions,
                                    MergeIteratorBuilder* merge_iter_builder,
-                                   int level, RangeDelAggregator* range_del_agg,
+                                   int level,
+                                   RangeDelAggregator* range_del_agg,
                                    bool allow_unprepared_value) {
   assert(storage_info_.finalized_);
   if (level >= storage_info_.num_non_empty_levels()) {
@@ -1681,8 +1685,8 @@ Status Version::OverlapWithLevelIterator(const ReadOptions& read_options,
           /*smallest_compaction_key=*/nullptr,
           /*largest_compaction_key=*/nullptr,
           /*allow_unprepared_value=*/false));
-      status = OverlapWithIterator(ucmp, smallest_user_key, largest_user_key,
-                                   iter.get(), overlap);
+      status = OverlapWithIterator(
+          ucmp, smallest_user_key, largest_user_key, iter.get(), overlap);
       if (!status.ok() || *overlap) {
         break;
       }
@@ -1696,8 +1700,8 @@ Status Version::OverlapWithLevelIterator(const ReadOptions& read_options,
         cfd_->internal_stats()->GetFileReadHist(level),
         TableReaderCaller::kUserIterator, IsFilterSkipped(level), level,
         &range_del_agg));
-    status = OverlapWithIterator(ucmp, smallest_user_key, largest_user_key,
-                                 iter.get(), overlap);
+    status = OverlapWithIterator(
+        ucmp, smallest_user_key, largest_user_key, iter.get(), overlap);
   }
 
   if (status.ok() && *overlap == false &&
@@ -2052,10 +2056,10 @@ void Version::MultiGet(const ReadOptions& read_options, MultiGetRange* range,
   }
 
   MultiGetRange file_picker_range(*range, range->begin(), range->end());
-  FilePickerMultiGet fp(&file_picker_range, &storage_info_.level_files_brief_,
-                        storage_info_.num_non_empty_levels_,
-                        &storage_info_.file_indexer_, user_comparator(),
-                        internal_comparator());
+  FilePickerMultiGet fp(
+      &file_picker_range,
+      &storage_info_.level_files_brief_, storage_info_.num_non_empty_levels_,
+      &storage_info_.file_indexer_, user_comparator(), internal_comparator());
   FdWithKeyRange* f = fp.GetNextFile();
   Status s;
   uint64_t num_index_read = 0;
@@ -3194,8 +3198,9 @@ void VersionStorageInfo::GetCleanInputsWithinInterval(
     return;
   }
 
-  GetOverlappingInputsRangeBinarySearch(level, begin, end, inputs, hint_index,
-                                        file_index, true /* within_interval */);
+  GetOverlappingInputsRangeBinarySearch(level, begin, end, inputs,
+                                        hint_index, file_index,
+                                        true /* within_interval */);
 }
 
 // Store in "*inputs" all files in "level" that overlap [begin,end]
@@ -4797,9 +4802,9 @@ Status VersionSet::ListColumnFamilies(std::vector<std::string>* column_families,
     s = fs->NewSequentialFile(manifest_path, soptions, &file, nullptr);
     if (!s.ok()) {
       return s;
-    }
-    file_reader.reset(new SequentialFileReader(std::move(file), manifest_path,
-                                               nullptr /*IOTracer*/));
+  }
+  file_reader.reset(new SequentialFileReader(std::move(file), manifest_path,
+                                             nullptr /*IOTracer*/));
   }
 
   VersionSet::LogReporter reporter;
@@ -4988,7 +4993,9 @@ Status VersionSet::DumpManifest(Options& options, std::string& dscname,
     std::unique_ptr<FSSequentialFile> file;
     const std::shared_ptr<FileSystem>& fs = options.env->GetFileSystem();
     s = fs->NewSequentialFile(
-        dscname, fs->OptimizeForManifestRead(file_options_), &file, nullptr);
+        dscname,
+        fs->OptimizeForManifestRead(file_options_), &file,
+        nullptr);
     if (!s.ok()) {
       return s;
     }
@@ -5142,10 +5149,9 @@ Status VersionSet::WriteCurrentStateToManifest(
       edit.SetLogNumber(log_number);
 
       if (cfd->GetID() == 0) {
-        // min_log_number_to_keep is for the whole db, not for specific column
-        // family. So it does not need to be set for every column family, just
-        // need to be set once. Since default CF can never be dropped, we set
-        // the min_log to the default CF here.
+        // min_log_number_to_keep is for the whole db, not for specific column family.
+        // So it does not need to be set for every column family, just need to be set once.
+        // Since default CF can never be dropped, we set the min_log to the default CF here.
         uint64_t min_log = min_log_number_to_keep_2pc();
         if (min_log != 0) {
           edit.SetMinLogNumberToKeep(min_log);
@@ -5540,8 +5546,8 @@ void VersionSet::GetLiveFilesMetaData(std::vector<LiveFileMetaData>* metadata) {
         filemetadata.largestkey = file->largest.user_key().ToString();
         filemetadata.smallest_seqno = file->fd.smallest_seqno;
         filemetadata.largest_seqno = file->fd.largest_seqno;
-        filemetadata.num_reads_sampled =
-            file->stats.num_reads_sampled.load(std::memory_order_relaxed);
+        filemetadata.num_reads_sampled = file->stats.num_reads_sampled.load(
+            std::memory_order_relaxed);
         filemetadata.being_compacted = file->being_compacted;
         filemetadata.num_entries = file->num_entries;
         filemetadata.num_deletions = file->num_deletions;

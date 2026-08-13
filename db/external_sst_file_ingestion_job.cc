@@ -8,8 +8,8 @@
 #include "db/external_sst_file_ingestion_job.h"
 
 #include <algorithm>
-#include <memory>
 #include <cinttypes>
+#include <memory>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -22,8 +22,8 @@
 #include "table/scoped_arena_iterator.h"
 #include "table/sst_file_writer_collectors.h"
 #include "table/table_builder.h"
-#include "util/hyperloglog.h"
 #include "test_util/sync_point.h"
+#include "util/hyperloglog.h"
 #include "util/stop_watch.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -432,12 +432,11 @@ Status ExternalSstFileIngestionJob::Run() {
     }
 
     edit_.AddFile(f.picked_level, f.fd.GetNumber(), f.fd.GetPathId(),
-                   f.fd.GetFileSize(), f.smallest_internal_key,
-                   f.largest_internal_key, f.assigned_seqno, f.assigned_seqno,
-                   false, kInvalidBlobFileNumber, oldest_ancester_time,
-                   current_time, f.file_checksum, f.file_checksum_func_name,
-                   std::make_shared<HyperLogLog>(12),
-                   0 /* hll_add_count */);
+                  f.fd.GetFileSize(), f.smallest_internal_key,
+                  f.largest_internal_key, f.assigned_seqno, f.assigned_seqno,
+                  false, kInvalidBlobFileNumber, oldest_ancester_time,
+                  current_time, f.file_checksum, f.file_checksum_func_name,
+                  std::make_shared<HyperLogLog>(12), 0 /* hll_add_count */);
   }
   return status;
 }

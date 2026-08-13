@@ -3,14 +3,15 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
+
 #include <limits>
 #include <string>
 #include <utility>
-
 #include "db/compaction/compaction.h"
 #include "db/compaction/compaction_picker_fifo.h"
 #include "db/compaction/compaction_picker_level.h"
 #include "db/compaction/compaction_picker_universal.h"
+
 #include "test_util/testharness.h"
 #include "test_util/testutil.h"
 #include "util/string_util.h"
@@ -319,8 +320,8 @@ TEST_F(CompactionPickerTest, NeedsCompactionLevel) {
       NewVersionStorage(kLevels, kCompactionStyleLevel);
       for (int i = 0; i < file_count; ++i) {
         Add(level, i, ToString((i + 100) * 1000).c_str(),
-            ToString((i + 100) * 1000 + 999).c_str(), file_size, 0, i * 100,
-            i * 100 + 99);
+            ToString((i + 100) * 1000 + 999).c_str(),
+            file_size, 0, i * 100, i * 100 + 99);
       }
       UpdateVersionStorageInfo();
       ASSERT_EQ(vstorage_->CompactionScoreLevel(0), level);
@@ -473,7 +474,8 @@ TEST_F(CompactionPickerTest, LevelTriggerDynamic4) {
 #ifndef ROCKSDB_LITE
 TEST_F(CompactionPickerTest, NeedsCompactionUniversal) {
   NewVersionStorage(1, kCompactionStyleUniversal);
-  UniversalCompactionPicker universal_compaction_picker(ioptions_, &icmp_);
+  UniversalCompactionPicker universal_compaction_picker(
+      ioptions_, &icmp_);
   UpdateVersionStorageInfo();
   // must return false when there's no files.
   ASSERT_EQ(universal_compaction_picker.NeedsCompaction(vstorage_.get()),
@@ -772,8 +774,8 @@ TEST_F(CompactionPickerTest, NeedsCompactionFIFO) {
   for (int i = 1; i <= kFileCount; ++i) {
     NewVersionStorage(1, kCompactionStyleFIFO);
     Add(0, i, ToString((i + 100) * 1000).c_str(),
-        ToString((i + 100) * 1000 + 999).c_str(), kFileSize, 0, i * 100,
-        i * 100 + 99);
+        ToString((i + 100) * 1000 + 999).c_str(),
+        kFileSize, 0, i * 100, i * 100 + 99);
     current_size += kFileSize;
     UpdateVersionStorageInfo();
     ASSERT_EQ(fifo_compaction_picker.NeedsCompaction(vstorage_.get()),
