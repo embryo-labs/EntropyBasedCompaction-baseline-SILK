@@ -102,7 +102,7 @@ using GFLAGS_NAMESPACE::ParseCommandLineFlags;
 using GFLAGS_NAMESPACE::RegisterFlagValidator;
 using GFLAGS_NAMESPACE::SetUsageMessage;
 
-DEFINE_string(benchmarks_json, "", "");
+DEFINE_string(benchmarks_json, "", "JSON array describing benchmark phases");
 
 DEFINE_string(
     benchmarks,
@@ -1165,8 +1165,13 @@ DEFINE_double(sine_c, 0,
 DEFINE_double(sine_d, 1,
              "D in f(x) = A sin(bx + c) + d");
 
-DEFINE_uint64(period_secs, 0, "");
-DEFINE_string(writes_per_second_file, "", "");
+DEFINE_uint64(period_secs, 0,
+              "Duration in seconds of one repetition of the workload defined "
+              "by --writes_per_second_file. The workload repeats until "
+              "--duration expires");
+DEFINE_string(writes_per_second_file, "",
+              "Path to whitespace-separated write rates in operations per "
+              "second");
 
 DEFINE_bool(rate_limit_bg_reads, false,
             "Use options.rate_limiter on compaction reads");
