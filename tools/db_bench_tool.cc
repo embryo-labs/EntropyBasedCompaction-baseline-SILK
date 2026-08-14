@@ -130,7 +130,6 @@ DEFINE_string(
 #endif
     "multireadrandom,"
     "mixgraph,"
-    "customperiodic,"
     "readseq,"
     "readtorowcache,"
     "readtocache,"
