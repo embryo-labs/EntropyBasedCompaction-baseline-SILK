@@ -129,8 +129,8 @@ DEFINE_string(
     "waitforcompaction,"
 #endif
     "multireadrandom,"
-    "customperiodic,"
     "mixgraph,"
+    "customperiodic,"
     "readseq,"
     "readtorowcache,"
     "readtocache,"
@@ -1166,6 +1166,9 @@ DEFINE_double(sine_c, 0,
 DEFINE_double(sine_d, 1,
              "D in f(x) = A sin(bx + c) + d");
 
+DEFINE_uint64(period_secs, 0, "");
+DEFINE_string(writes_per_second_file, "", "");
+
 DEFINE_bool(rate_limit_bg_reads, false,
             "Use options.rate_limiter on compaction reads");
 
@@ -1240,9 +1243,6 @@ DEFINE_uint64(
     benchmark_read_rate_limit, 0,
     "If non-zero, db_bench will rate-limit the reads from RocksDB. This "
     "is the global rate in ops/second.");
-
-DEFINE_uint64(period_secs, 0, "");
-DEFINE_string(writes_per_second_file, "", "");
 
 DEFINE_uint64(max_compaction_bytes,
               ROCKSDB_NAMESPACE::Options().max_compaction_bytes,
@@ -3557,15 +3557,15 @@ class Benchmark {
         fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
                 entries_per_batch_);
         method = &Benchmark::MultiReadRandom;
-      } else if (name == "customperiodic") {
-        method = &Benchmark::CustomPeriodic;
-        num_threads += FLAGS_num_writers;
       } else if (name == "approximatesizerandom") {
         fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
                 entries_per_batch_);
         method = &Benchmark::ApproximateSizeRandom;
       } else if (name == "mixgraph") {
         method = &Benchmark::MixGraph;
+      } else if (name == "customperiodic") {
+        method = &Benchmark::CustomPeriodic;
+        num_threads += FLAGS_num_writers;
       } else if (name == "readmissing") {
         ++key_size_;
         method = &Benchmark::ReadRandom;
